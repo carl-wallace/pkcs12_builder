@@ -8,6 +8,7 @@ use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 
 use cms::encrypted_data::EncryptedData;
+use const_oid::ObjectIdentifier;
 use const_oid::db::rfc2985::PKCS_9_AT_LOCAL_KEY_ID;
 use const_oid::db::rfc5911::{ID_DATA, ID_ENCRYPTED_DATA};
 use der::{
@@ -30,6 +31,109 @@ use crate::{
     error::{Error, Result},
     supported_algs::MacAlgorithm,
 };
+
+/// Returns `true` if the OID identifies a PKCS#12 legacy PBE algorithm.
+#[cfg(feature = "sha1")]
+fn is_pkcs12_pbe_oid(oid: &ObjectIdentifier) -> bool {
+    matches!(
+        *oid,
+        pkcs12::PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC
+            | pkcs12::PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC
+            | pkcs12::PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC
+    )
+}
+
+/// Decrypt data encrypted with a PKCS#12 legacy PBE scheme (SHA-1 based KDF with 3DES-CBC or RC2-CBC).
+#[cfg(feature = "sha1")]
+fn pkcs12_pbe_decrypt<'a>(
+    alg_oid: &ObjectIdentifier,
+    params_der: &[u8],
+    password: &str,
+    buffer: &'a mut [u8],
+) -> Result<&'a [u8]> {
+    use cbc::cipher::{BlockModeDecrypt, InnerIvInit, KeyIvInit, block_padding::Pkcs7};
+    use pkcs12::pbe_params::Pkcs12PbeParams;
+
+    let params = Pkcs12PbeParams::from_der(params_der)?;
+
+    if params.iterations as u32 > MAX_ITERATION_COUNT {
+        return Err(Error::Pkcs12Builder(format!(
+            "The iterations limit exceeded. {} is greater than {}",
+            params.iterations, MAX_ITERATION_COUNT
+        )));
+    }
+
+    let salt = params.salt.as_bytes();
+    let iterations = params.iterations;
+
+    let (key_len, iv_len) = match *alg_oid {
+        pkcs12::PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC => (24, 8),
+        pkcs12::PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC => (5, 8),
+        pkcs12::PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC => (16, 8),
+        _ => {
+            return Err(Error::Pkcs12Builder(format!(
+                "Unsupported PKCS#12 PBE algorithm: {alg_oid}"
+            )));
+        }
+    };
+
+    let key =
+        derive_key_utf8::<Sha1>(password, salt, Pkcs12KeyType::EncryptionKey, iterations, key_len)?;
+    let iv = derive_key_utf8::<Sha1>(password, salt, Pkcs12KeyType::Iv, iterations, iv_len)?;
+
+    match *alg_oid {
+        pkcs12::PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC => {
+            cbc::Decryptor::<des::TdesEde3>::new_from_slices(&key, &iv)
+                .map_err(|e| {
+                    Error::Pkcs12Builder(format!("Failed to init 3DES-CBC decryptor: {e}"))
+                })?
+                .decrypt_padded::<Pkcs7>(buffer)
+                .map_err(|e| Error::Pkcs12Builder(format!("3DES-CBC decryption failed: {e}")))
+        }
+        pkcs12::PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC => {
+            let cipher = rc2::Rc2::new_with_eff_key_len(&key, 40);
+            cbc::Decryptor::<rc2::Rc2>::inner_iv_slice_init(cipher, &iv)
+                .map_err(|e| {
+                    Error::Pkcs12Builder(format!("Failed to init RC2-40-CBC decryptor: {e}"))
+                })?
+                .decrypt_padded::<Pkcs7>(buffer)
+                .map_err(|e| Error::Pkcs12Builder(format!("RC2-40-CBC decryption failed: {e}")))
+        }
+        pkcs12::PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC => {
+            let cipher = rc2::Rc2::new_with_eff_key_len(&key, 128);
+            cbc::Decryptor::<rc2::Rc2>::inner_iv_slice_init(cipher, &iv)
+                .map_err(|e| {
+                    Error::Pkcs12Builder(format!("Failed to init RC2-128-CBC decryptor: {e}"))
+                })?
+                .decrypt_padded::<Pkcs7>(buffer)
+                .map_err(|e| Error::Pkcs12Builder(format!("RC2-128-CBC decryption failed: {e}")))
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Extract a certificate and optional key ID from decrypted SafeContents bytes.
+fn extract_cert_from_safe_contents(plaintext: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    let safe_bags = SafeContents::from_der(plaintext)?;
+    for safe_bag in safe_bags {
+        match safe_bag.bag_id {
+            pkcs12::PKCS_12_CERT_BAG_OID => {
+                let key_id = get_key_id(safe_bag.bag_attributes);
+
+                let cs: ContextSpecific<CertBag> =
+                    ContextSpecific::from_der(&safe_bag.bag_value)?;
+
+                let cb = cs.value;
+                return Ok((cb.cert_value.as_bytes().to_vec(), key_id));
+            }
+            _ => {
+                warn!("Unexpected SafeBag type. Ignoring and continuing.");
+            }
+        };
+    }
+    error!("Failed to find certificate bag");
+    Err(Error::NotFound)
+}
 
 /// Takes an [Any] that notionally contains an [OctetString] and returns an [AuthenticateSafe](AuthenticatedSafe)
 /// object or error.
@@ -89,6 +193,37 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
             pkcs12::PKCS_12_PKCS8_KEY_BAG_OID => {
                 let key_id = get_key_id(safe_bag.bag_attributes);
 
+                // Try PKCS#12 legacy PBE first (requires sha1 feature)
+                #[cfg(feature = "sha1")]
+                {
+                    let cs_generic: ContextSpecific<
+                        pkcs12::pbe_params::EncryptedPrivateKeyInfo,
+                    > = ContextSpecific::from_der(&safe_bag.bag_value)?;
+                    if is_pkcs12_pbe_oid(&cs_generic.value.encryption_algorithm.oid) {
+                        let params_der = cs_generic
+                            .value
+                            .encryption_algorithm
+                            .parameters
+                            .as_ref()
+                            .ok_or_else(|| {
+                                Error::Pkcs12Builder(
+                                    "Missing PKCS#12 PBE parameters".to_string(),
+                                )
+                            })?
+                            .to_der()?;
+                        let mut ciphertext =
+                            cs_generic.value.encrypted_data.as_bytes().to_vec();
+                        let plaintext = pkcs12_pbe_decrypt(
+                            &cs_generic.value.encryption_algorithm.oid,
+                            &params_der,
+                            password,
+                            &mut ciphertext,
+                        )?;
+                        return Ok((plaintext.to_vec(), key_id));
+                    }
+                }
+
+                // PBES2 path
                 let cs: ContextSpecific<EncryptedPrivateKeyInfo<OctetString>> =
                     ContextSpecific::from_der(&safe_bag.bag_value)?;
 
@@ -127,6 +262,35 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
 pub fn get_cert(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
     let enc_data = EncryptedData::from_der(&content.to_der()?)?;
 
+    let Some(ciphertext_os) = enc_data.enc_content_info.encrypted_content else {
+        return Err(Error::Pkcs12Builder(String::from(
+            "Failed to read encrypted content",
+        )));
+    };
+    let mut ciphertext = ciphertext_os.as_bytes().to_vec();
+
+    // Try PKCS#12 legacy PBE first (requires sha1 feature)
+    #[cfg(feature = "sha1")]
+    if is_pkcs12_pbe_oid(&enc_data.enc_content_info.content_enc_alg.oid) {
+        let params_der = enc_data
+            .enc_content_info
+            .content_enc_alg
+            .parameters
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Pkcs12Builder("Missing PKCS#12 PBE parameters".to_string())
+            })?
+            .to_der()?;
+        let plaintext = pkcs12_pbe_decrypt(
+            &enc_data.enc_content_info.content_enc_alg.oid,
+            &params_der,
+            password,
+            &mut ciphertext,
+        )?;
+        return extract_cert_from_safe_contents(plaintext);
+    }
+
+    // PBES2 path
     let enc_params = match enc_data
         .enc_content_info
         .content_enc_alg
@@ -151,34 +315,9 @@ pub fn get_cert(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8
         }
     }
 
-    if let Some(ciphertext_os) = enc_data.enc_content_info.encrypted_content {
-        let mut ciphertext = ciphertext_os.as_bytes().to_vec();
-        let scheme = pkcs5::EncryptionScheme::from(params.clone());
-        let plaintext = scheme.decrypt_in_place(password, &mut ciphertext)?;
-        let safe_bags = SafeContents::from_der(plaintext)?;
-        for safe_bag in safe_bags {
-            match safe_bag.bag_id {
-                pkcs12::PKCS_12_CERT_BAG_OID => {
-                    let key_id = get_key_id(safe_bag.bag_attributes);
-
-                    let cs: ContextSpecific<CertBag> =
-                        ContextSpecific::from_der(&safe_bag.bag_value)?;
-
-                    let cb = cs.value;
-                    return Ok((cb.cert_value.as_bytes().to_vec(), key_id));
-                }
-                _ => {
-                    warn!("Unexpected SafeBag type. Ignoring and continuing.");
-                }
-            };
-        }
-        error!("Failed to find certificate bag");
-        Err(Error::NotFound)
-    } else {
-        Err(Error::Pkcs12Builder(String::from(
-            "Failed to read encrypted content",
-        )))
-    }
+    let scheme = pkcs5::EncryptionScheme::from(params.clone());
+    let plaintext = scheme.decrypt_in_place(password, &mut ciphertext)?;
+    extract_cert_from_safe_contents(plaintext)
 }
 
 /// Takes an optional set of Attributes and returns the first value in the key ID attribute if present.

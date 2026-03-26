@@ -290,6 +290,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.9.0-rc.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3214053e68a813b9c06ef61075c844f3a1cdeb307d8998ea8555c063caa52fa9"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "digest"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -644,10 +653,12 @@ dependencies = [
 name = "pkcs12_builder"
 version = "0.1.1"
 dependencies = [
+ "cbc",
  "cms",
  "const-oid",
  "crypto-common",
  "der",
+ "des",
  "hex-literal",
  "hmac",
  "log",
@@ -657,6 +668,7 @@ dependencies = [
  "pkcs8",
  "rand",
  "rand_core",
+ "rc2",
  "sha1",
  "sha2",
  "spki",
@@ -762,6 +774,15 @@ name = "rand_core"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
+
+[[package]]
+name = "rc2"
+version = "0.9.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "709fe878524f5ecf745fcb78bd7860c1932f7abddbe1565d3863ce5f0b233fa7"
+dependencies = [
+ "cipher",
+]
 
 [[package]]
 name = "rsa"
