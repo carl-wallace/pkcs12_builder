@@ -10,10 +10,7 @@ use der::{Decode, Encode};
 use tempfile::TempDir;
 use x509_cert::Certificate;
 
-use pkcs12_builder::{
-    MacAlgorithm, MacDataBuilder, Pkcs12Builder,
-    asn1_utils::get_key_and_cert,
-};
+use pkcs12_builder::{MacAlgorithm, MacDataBuilder, Pkcs12Builder, asn1_utils::get_key_and_cert};
 
 const PASSWORD: &str = "sha1-test-pass";
 
@@ -76,7 +73,13 @@ fn generate_credentials() -> (String, String, Vec<u8>, Vec<u8>, TempDir) {
 
     let key_pem_str = key_pem.to_str().unwrap().to_string();
     let cert_pem_str = cert_pem.to_str().unwrap().to_string();
-    (key_pem_str, cert_pem_str, key_der.stdout, cert_der.stdout, dir)
+    (
+        key_pem_str,
+        cert_pem_str,
+        key_der.stdout,
+        cert_der.stdout,
+        dir,
+    )
 }
 
 /// Build a PKCS #12 file with OpenSSL using SHA-1 MAC and PBES2 encryption.
@@ -114,7 +117,10 @@ fn openssl_export_sha1_mac(cert_pem_path: &str, key_pem_path: &str) -> Vec<u8> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    assert!(out.status.success(), "openssl pkcs12 -export with SHA1 MAC failed");
+    assert!(
+        out.status.success(),
+        "openssl pkcs12 -export with SHA1 MAC failed"
+    );
 
     std::fs::read(&p12_path).expect("read exported p12")
 }
@@ -146,7 +152,10 @@ fn openssl_sha1_mac_wrong_password_fails() {
     let p12_bytes = openssl_export_sha1_mac(&cert_pem, &key_pem);
 
     let result = get_key_and_cert(&p12_bytes, "wrong-password");
-    assert!(result.is_err(), "SHA1 MAC verification should fail with wrong password");
+    assert!(
+        result.is_err(),
+        "SHA1 MAC verification should fail with wrong password"
+    );
 }
 
 /// Verify that `MacDataBuilder` rejects `HmacSha1` for MAC generation.

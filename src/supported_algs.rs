@@ -1,12 +1,12 @@
 //! Supported MAC and encryption algorithms
 
 use crate::Error;
+#[cfg(feature = "sha1")]
+use const_oid::db::rfc5912::ID_SHA_1;
 use const_oid::{
     ObjectIdentifier,
     db::rfc5912::{ID_SHA_256, ID_SHA_384, ID_SHA_512},
 };
-#[cfg(feature = "sha1")]
-use const_oid::db::rfc5912::ID_SHA_1;
 
 /// Supported MAC algorithms.
 #[derive(Clone, Debug, Eq, PartialEq)]

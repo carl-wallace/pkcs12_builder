@@ -8,6 +8,7 @@ use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 
 use cms::encrypted_data::EncryptedData;
+#[cfg(feature = "sha1")]
 use const_oid::ObjectIdentifier;
 use const_oid::db::rfc2985::PKCS_9_AT_LOCAL_KEY_ID;
 use const_oid::db::rfc5911::{ID_DATA, ID_ENCRYPTED_DATA};
@@ -77,8 +78,13 @@ fn pkcs12_pbe_decrypt<'a>(
         }
     };
 
-    let key =
-        derive_key_utf8::<Sha1>(password, salt, Pkcs12KeyType::EncryptionKey, iterations, key_len)?;
+    let key = derive_key_utf8::<Sha1>(
+        password,
+        salt,
+        Pkcs12KeyType::EncryptionKey,
+        iterations,
+        key_len,
+    )?;
     let iv = derive_key_utf8::<Sha1>(password, salt, Pkcs12KeyType::Iv, iterations, iv_len)?;
 
     match *alg_oid {
@@ -120,8 +126,7 @@ fn extract_cert_from_safe_contents(plaintext: &[u8]) -> Result<(Vec<u8>, Option<
             pkcs12::PKCS_12_CERT_BAG_OID => {
                 let key_id = get_key_id(safe_bag.bag_attributes);
 
-                let cs: ContextSpecific<CertBag> =
-                    ContextSpecific::from_der(&safe_bag.bag_value)?;
+                let cs: ContextSpecific<CertBag> = ContextSpecific::from_der(&safe_bag.bag_value)?;
 
                 let cb = cs.value;
                 return Ok((cb.cert_value.as_bytes().to_vec(), key_id));
@@ -196,9 +201,8 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
                 // Try PKCS#12 legacy PBE first (requires sha1 feature)
                 #[cfg(feature = "sha1")]
                 {
-                    let cs_generic: ContextSpecific<
-                        pkcs12::pbe_params::EncryptedPrivateKeyInfo,
-                    > = ContextSpecific::from_der(&safe_bag.bag_value)?;
+                    let cs_generic: ContextSpecific<pkcs12::pbe_params::EncryptedPrivateKeyInfo> =
+                        ContextSpecific::from_der(&safe_bag.bag_value)?;
                     if is_pkcs12_pbe_oid(&cs_generic.value.encryption_algorithm.oid) {
                         let params_der = cs_generic
                             .value
@@ -206,13 +210,10 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
                             .parameters
                             .as_ref()
                             .ok_or_else(|| {
-                                Error::Pkcs12Builder(
-                                    "Missing PKCS#12 PBE parameters".to_string(),
-                                )
+                                Error::Pkcs12Builder("Missing PKCS#12 PBE parameters".to_string())
                             })?
                             .to_der()?;
-                        let mut ciphertext =
-                            cs_generic.value.encrypted_data.as_bytes().to_vec();
+                        let mut ciphertext = cs_generic.value.encrypted_data.as_bytes().to_vec();
                         let plaintext = pkcs12_pbe_decrypt(
                             &cs_generic.value.encryption_algorithm.oid,
                             &params_der,
@@ -277,9 +278,7 @@ pub fn get_cert(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8
             .content_enc_alg
             .parameters
             .as_ref()
-            .ok_or_else(|| {
-                Error::Pkcs12Builder("Missing PKCS#12 PBE parameters".to_string())
-            })?
+            .ok_or_else(|| Error::Pkcs12Builder("Missing PKCS#12 PBE parameters".to_string()))?
             .to_der()?;
         let plaintext = pkcs12_pbe_decrypt(
             &enc_data.enc_content_info.content_enc_alg.oid,
