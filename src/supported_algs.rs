@@ -5,10 +5,15 @@ use const_oid::{
     ObjectIdentifier,
     db::rfc5912::{ID_SHA_256, ID_SHA_384, ID_SHA_512},
 };
+#[cfg(feature = "sha1")]
+use const_oid::db::rfc5912::ID_SHA_1;
 
 /// Supported MAC algorithms.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MacAlgorithm {
+    /// HMAC SHA1 (verification only, legacy/interoperability)
+    #[cfg(feature = "sha1")]
+    HmacSha1,
     /// HMAC SHA256
     HmacSha256,
     /// HMAC SHA384
@@ -24,6 +29,8 @@ impl TryFrom<ObjectIdentifier> for MacAlgorithm {
     /// one of the supported HMAC-SHA-2 algorithms.
     fn try_from(value: ObjectIdentifier) -> Result<Self, Self::Error> {
         match value {
+            #[cfg(feature = "sha1")]
+            ID_SHA_1 => Ok(Self::HmacSha1),
             ID_SHA_256 => Ok(Self::HmacSha256),
             ID_SHA_384 => Ok(Self::HmacSha384),
             ID_SHA_512 => Ok(Self::HmacSha512),
@@ -38,6 +45,8 @@ impl MacAlgorithm {
     /// Return the OID of the algorithm.
     pub fn oid(&self) -> ObjectIdentifier {
         match self {
+            #[cfg(feature = "sha1")]
+            MacAlgorithm::HmacSha1 => ID_SHA_1,
             MacAlgorithm::HmacSha256 => ID_SHA_256,
             MacAlgorithm::HmacSha384 => ID_SHA_384,
             MacAlgorithm::HmacSha512 => ID_SHA_512,
@@ -47,6 +56,8 @@ impl MacAlgorithm {
     /// Return the output size of the associated digest algorithm.
     pub fn output_size(&self) -> usize {
         match self {
+            #[cfg(feature = "sha1")]
+            MacAlgorithm::HmacSha1 => 20,
             MacAlgorithm::HmacSha256 => 32,
             MacAlgorithm::HmacSha384 => 48,
             MacAlgorithm::HmacSha512 => 64,

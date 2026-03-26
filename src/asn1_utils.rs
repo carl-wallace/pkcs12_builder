@@ -3,6 +3,8 @@
 use log::{error, warn};
 
 use hmac::{Hmac, KeyInit, Mac};
+#[cfg(feature = "sha1")]
+use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 
 use cms::encrypted_data::EncryptedData;
@@ -272,6 +274,14 @@ fn check_mac(password: &str, mac_data: &MacData, content: &[u8]) -> Result<()> {
     let md = MacAlgorithm::try_from(mac_data.mac.algorithm.oid)?;
 
     let mac_key = match md {
+        #[cfg(feature = "sha1")]
+        MacAlgorithm::HmacSha1 => derive_key_utf8::<Sha1>(
+            password,
+            mac_data.mac_salt.as_bytes(),
+            Pkcs12KeyType::Mac,
+            mac_data.iterations,
+            md.output_size(),
+        )?,
         MacAlgorithm::HmacSha256 => derive_key_utf8::<Sha256>(
             password,
             mac_data.mac_salt.as_bytes(),
@@ -307,6 +317,13 @@ fn check_mac(password: &str, mac_data: &MacData, content: &[u8]) -> Result<()> {
 /// Generate a MAC given a MAC key and content
 fn generate_mac(md: MacAlgorithm, mac_key: &[u8], content: &[u8]) -> Result<Vec<u8>> {
     match md {
+        #[cfg(feature = "sha1")]
+        MacAlgorithm::HmacSha1 => {
+            type HmacSha1 = Hmac<Sha1>;
+            let mut mac = HmacSha1::new_from_slice(mac_key)?;
+            mac.update(content);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
         MacAlgorithm::HmacSha256 => {
             type HmacSha256 = Hmac<Sha256>;
             let mut mac = HmacSha256::new_from_slice(mac_key)?;

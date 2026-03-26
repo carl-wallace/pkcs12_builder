@@ -114,6 +114,10 @@ impl MacDataBuilder {
                 iterations,
                 self.digest_algorithm.output_size(),
             )?),
+            #[cfg(feature = "sha1")]
+            MacAlgorithm::HmacSha1 => Err(Error::Pkcs12Builder(String::from(
+                "HMAC-SHA1 is not supported for MAC generation",
+            ))),
         }
     }
 
@@ -138,6 +142,10 @@ impl MacDataBuilder {
                 mac.update(content);
                 Ok(mac.finalize().into_bytes().to_vec())
             }
+            #[cfg(feature = "sha1")]
+            MacAlgorithm::HmacSha1 => Err(Error::Pkcs12Builder(String::from(
+                "HMAC-SHA1 is not supported for MAC generation",
+            ))),
         }
     }
 

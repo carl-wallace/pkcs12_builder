@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "pkcs12_builder"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cms",
  "const-oid",
@@ -657,6 +657,7 @@ dependencies = [
  "pkcs8",
  "rand",
  "rand_core",
+ "sha1",
  "sha2",
  "spki",
  "subtle",
