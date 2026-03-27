@@ -28,7 +28,7 @@ rand_core = { version = "0.10.0" }
 subtle = "2.6.1"
 
 [features]
-sha1 = ["dep:sha1", "dep:des", "dep:rc2", "dep:cbc"]
+sha1 = ["dep:sha1", "dep:des", "dep:rc2", "dep:cbc", "pkcs5/sha1-insecure", "pkcs5/3des"]
 
 [dev-dependencies]
 hex-literal = "1.1.0"

@@ -688,9 +688,11 @@ dependencies = [
  "aes-gcm",
  "cbc",
  "der",
+ "des",
  "pbkdf2",
  "rand_core",
  "scrypt",
+ "sha1",
  "sha2",
  "spki",
 ]
