@@ -26,6 +26,7 @@ use pkcs12::{
 use subtle::ConstantTimeEq;
 use x509_cert::Certificate;
 use x509_cert::attr::Attributes;
+use zeroize::Zeroizing;
 
 use crate::{
     MAX_ITERATION_COUNT,
@@ -45,8 +46,8 @@ pub struct CertContents {
 
 /// Fully decoded contents of a PKCS #12 object.
 pub struct Pkcs12Contents {
-    /// DER-encoded private key.
-    pub key_der: Vec<u8>,
+    /// DER-encoded private key (zeroized on drop).
+    pub key_der: Zeroizing<Vec<u8>>,
     /// Parsed end-entity certificate.
     pub certificate: Certificate,
     /// Optional `localKeyID` attribute value.
@@ -262,12 +263,13 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
                                 Error::Pkcs12Builder("Missing PKCS#12 PBE parameters".to_string())
                             })?
                             .to_der()?;
-                        let mut ciphertext = cs_generic.value.encrypted_data.as_bytes().to_vec();
+                        let mut ciphertext =
+                            Zeroizing::new(cs_generic.value.encrypted_data.as_bytes().to_vec());
                         let plaintext = pkcs12_pbe_decrypt(
                             &cs_generic.value.encryption_algorithm.oid,
                             &params_der,
                             password,
-                            &mut ciphertext,
+                            &mut *ciphertext,
                         )?;
                         return Ok((plaintext.to_vec(), key_id));
                     }
@@ -288,7 +290,7 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
                     }
                 }
 
-                let mut ciphertext = cs.value.encrypted_data.as_bytes().to_vec();
+                let mut ciphertext = Zeroizing::new(cs.value.encrypted_data.as_bytes().to_vec());
                 let plaintext = cs
                     .value
                     .encryption_algorithm
@@ -317,7 +319,7 @@ pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
             "Failed to read encrypted content",
         )));
     };
-    let mut ciphertext = ciphertext_os.as_bytes().to_vec();
+    let mut ciphertext = Zeroizing::new(ciphertext_os.as_bytes().to_vec());
 
     // Try PKCS#12 legacy PBE first (requires sha1 feature)
     #[cfg(feature = "sha1")]
@@ -333,7 +335,7 @@ pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
             &enc_data.enc_content_info.content_enc_alg.oid,
             &params_der,
             password,
-            &mut ciphertext,
+            &mut *ciphertext,
         )?;
         return extract_certs_from_safe_contents(plaintext);
     }
@@ -448,7 +450,7 @@ pub fn get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents
             additional_certificates.push(Certificate::from_der(der)?);
         }
         return Ok(Pkcs12Contents {
-            key_der: recovered_key,
+            key_der: Zeroizing::new(recovered_key),
             certificate: Certificate::from_der(&cert_contents.cert_der)?,
             key_id,
             additional_certificates,

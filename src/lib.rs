@@ -62,6 +62,7 @@ use pkcs12::{
     safe_bag::SafeBag,
 };
 use x509_cert::{Certificate, attr::Attribute, spki::AlgorithmIdentifierOwned};
+use zeroize::Zeroizing;
 
 /// Maximum number of iterations that will be performed when parsing a PKCS #12 object
 pub const MAX_ITERATION_COUNT: u32 = 100_000_000;
@@ -415,17 +416,17 @@ impl Pkcs12Builder {
             let mut salt = vec![0_u8; 16];
             rng.fill_bytes(salt.as_mut_slice());
 
-            let cert_kdf_params = Pbkdf2Params {
+            let key_kdf_params = Pbkdf2Params {
                 salt: Salt::new(salt)?,
                 iteration_count: self.iterations.unwrap_or(600000),
                 key_length: None,
                 prf,
             };
-            let enc_cert_kdf_params = cert_kdf_params.to_der()?;
-            let enc_cert_kdf_params_ref = AnyRef::try_from(enc_cert_kdf_params.as_slice())?;
+            let enc_key_kdf_params = key_kdf_params.to_der()?;
+            let enc_key_kdf_params_ref = AnyRef::try_from(enc_key_kdf_params.as_slice())?;
             self.key_kdf_algorithm_identifier = Some(AlgorithmIdentifierOwned {
                 oid: PBKDF2_OID,
-                parameters: Some(Any::from(enc_cert_kdf_params_ref)),
+                parameters: Some(Any::from(enc_key_kdf_params_ref)),
             });
         }
 
@@ -433,11 +434,11 @@ impl Pkcs12Builder {
             let mut iv = vec![0_u8; 16];
             rng.fill_bytes(iv.as_mut_slice());
 
-            let cert_iv = OctetString::new(iv)?.to_der()?;
-            let cert_iv_ref = AnyRef::try_from(cert_iv.as_slice())?;
+            let key_iv = OctetString::new(iv)?.to_der()?;
+            let key_iv_ref = AnyRef::try_from(key_iv.as_slice())?;
             self.key_enc_algorithm_identifier = Some(AlgorithmIdentifier {
                 oid: enc_alg.oid(),
-                parameters: Some(Any::from(cert_iv_ref)),
+                parameters: Some(Any::from(key_iv_ref)),
             });
         }
 
@@ -543,16 +544,16 @@ impl Pkcs12Builder {
             encryption: cert_encryption,
         };
         let cert_scheme = pkcs5::EncryptionScheme::from(cert_params.clone());
-        let mut enc_buf = vec![];
+        let mut enc_buf = Zeroizing::new(vec![]);
         enc_buf.extend_from_slice(&der_cert_safe_bags);
         enc_buf.extend_from_slice(&[0u8; 16]);
         let cert_ciphertext =
             match cert_scheme.encrypt_in_place(password, &mut enc_buf, der_cert_safe_bags.len()) {
                 Ok(ct) => ct,
                 Err(e) => {
-                    return Err(Error::General(
-                        format!("Failed to encrypt certificate: {e:?}").to_string(),
-                    ));
+                    return Err(Error::General(format!(
+                        "Failed to encrypt certificate: {e:?}"
+                    )));
                 }
             };
 
@@ -606,14 +607,12 @@ impl Pkcs12Builder {
             encryption: key_encryption,
         };
         let key_scheme = pkcs5::EncryptionScheme::from(key_params.clone());
-        let mut enc_buf = key.to_vec();
+        let mut enc_buf = Zeroizing::new(key.to_vec());
         enc_buf.extend_from_slice(&[0u8; 16]);
         let key_ciphertext = match key_scheme.encrypt_in_place(password, &mut enc_buf, key.len()) {
             Ok(ct) => ct,
             Err(e) => {
-                return Err(Error::General(
-                    format!("Failed to encrypt key: {e:?}").to_string(),
-                ));
+                return Err(Error::General(format!("Failed to encrypt key: {e:?}")));
             }
         };
 
@@ -682,6 +681,25 @@ pub fn add_key_id_attr(attrs: &mut SetOfVec<Attribute>, key_id: &[u8]) -> Result
     values.insert(Any::from(attr_bytes_ref))?;
     let attr = Attribute {
         oid: PKCS_9_AT_LOCAL_KEY_ID,
+        values,
+    };
+    Ok(attrs.insert(attr)?)
+}
+
+/// Adds an [Attribute] containing the provided friendly name to the provided set of attributes.
+///
+/// The friendly name is encoded as a BMP string (UCS-2) per PKCS #9.
+pub fn add_friendly_name_attr(attrs: &mut SetOfVec<Attribute>, name: &str) -> Result<()> {
+    use const_oid::db::rfc2985::PKCS_9_AT_FRIENDLY_NAME;
+    use der::asn1::BmpString;
+
+    let bmp = BmpString::from_utf8(name)?;
+    let attr_bytes = bmp.to_der()?;
+    let attr_bytes_ref = AnyRef::try_from(attr_bytes.as_slice())?;
+    let mut values = SetOfVec::new();
+    values.insert(Any::from(attr_bytes_ref))?;
+    let attr = Attribute {
+        oid: PKCS_9_AT_FRIENDLY_NAME,
         values,
     };
     Ok(attrs.insert(attr)?)

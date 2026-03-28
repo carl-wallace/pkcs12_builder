@@ -6,6 +6,8 @@ Standalone library crate for building and parsing PKCS #12 objects.
 This crate provides [Pkcs12Builder] for creating a `Pfx` containing one private key and one certificate, plus optional additional certificates (e.g. CA/intermediate chain certificates), all protected with password-based encryption (PBES2 / PBKDF2 by default) and a password-based MAC,
 and [MacDataBuilder] for creating the `MacData` structure included in a `Pfx`.
 
+Helper functions [add_key_id_attr] and [add_friendly_name_attr] are provided for setting the `localKeyID` and `friendlyName` PKCS #9 attributes on certificate and key bags.
+
 ## Quick start
 
 ```rust,ignore
@@ -14,6 +16,7 @@ let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 
 
 let mut cert_attrs = SetOfVec::new();
 add_key_id_attr(&mut cert_attrs, &key_id).unwrap();
+add_friendly_name_attr(&mut cert_attrs, "My Certificate").unwrap();
 
 let mut key_attrs = SetOfVec::new();
 add_key_id_attr(&mut key_attrs, &key_id).unwrap();

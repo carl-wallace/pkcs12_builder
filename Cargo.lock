@@ -676,6 +676,7 @@ dependencies = [
  "subtle-encoding",
  "tempfile",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]

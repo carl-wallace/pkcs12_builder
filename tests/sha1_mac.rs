@@ -140,7 +140,7 @@ fn openssl_sha1_mac_rust_reads() {
     let contents =
         get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert with SHA1 MAC failed");
 
-    assert_eq!(contents.key_der, key_der);
+    assert_eq!(*contents.key_der, key_der);
     assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
 }
 

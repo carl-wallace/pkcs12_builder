@@ -144,7 +144,7 @@ fn legacy_3des_both_bags() {
     let contents =
         get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert with 3DES PBE failed");
 
-    assert_eq!(contents.key_der, key_der);
+    assert_eq!(*contents.key_der, key_der);
     assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
 }
 
@@ -177,7 +177,7 @@ fn legacy_cert_pbes2_key() {
     let contents = get_key_and_cert(&p12_bytes, PASSWORD)
         .expect("get_key_and_cert with mixed PBE/PBES2 failed");
 
-    assert_eq!(contents.key_der, key_der);
+    assert_eq!(*contents.key_der, key_der);
     assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
 }
 
@@ -191,7 +191,7 @@ fn pbes2_cert_legacy_key() {
     let contents = get_key_and_cert(&p12_bytes, PASSWORD)
         .expect("get_key_and_cert with mixed PBES2/PBE failed");
 
-    assert_eq!(contents.key_der, key_der);
+    assert_eq!(*contents.key_der, key_der);
     assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
 }
 
@@ -263,7 +263,7 @@ fn legacy_rc2_40_cert_3des_key() {
     let contents = get_key_and_cert(&p12_bytes, PASSWORD)
         .expect("get_key_and_cert with RC2-40 cert / 3DES key failed");
 
-    assert_eq!(contents.key_der, key_der);
+    assert_eq!(*contents.key_der, key_der);
     assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
 }
 

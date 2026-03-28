@@ -50,7 +50,7 @@ fn check_key_and_cert(
 
     let contents = get_key_and_cert(der_p12, password).unwrap();
     assert_eq!(contents.certificate.to_der().unwrap(), cert);
-    assert_eq!(contents.key_der, key);
+    assert_eq!(*contents.key_der, key);
     if key_id.is_some() {
         assert_eq!(&contents.key_id, key_id);
     } else {
@@ -191,7 +191,7 @@ fn p12_simple() {
         .build_with_rng(&cert.clone(), key, "password", &mut rand::rng())
         .unwrap();
     let contents = get_key_and_cert(&der_pfx, "password").unwrap();
-    assert_eq!(contents.key_der, key);
+    assert_eq!(*contents.key_der, key);
     assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
     assert_eq!(contents.key_id, Some(key_id.to_vec()));
 }
@@ -398,7 +398,7 @@ fn p12_builder_test() {
 
     let contents = get_key_and_cert(&der_pfx, "").unwrap();
     assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
-    assert_eq!(contents.key_der, key);
+    assert_eq!(*contents.key_der, key);
     assert_eq!(contents.key_id, Some(key_id.to_vec()));
 }
 
