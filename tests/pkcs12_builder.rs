@@ -184,6 +184,8 @@ fn p12_simple() {
     let mut key_attrs = SetOfVec::new();
     add_key_id_attr(&mut key_attrs, &key_id).unwrap();
     let der_pfx = Pkcs12Builder::new()
+        .iterations(Some(2048))
+        .unwrap()
         .key_attributes(Some(key_attrs.clone()))
         .cert_attributes(Some(cert_attrs.clone()))
         .build_with_rng(&cert.clone(), key, "password", &mut rand::rng())
@@ -278,6 +280,7 @@ pub fn buffer_to_hex(buffer: &[u8]) -> String {
 #[test]
 fn p12_builder_with_defaults_test() {
     let mut p12_builder = Pkcs12Builder::new();
+    // This test intentionally uses defaults (600k iterations) to verify default behavior.
     let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
 
     let mut cert_attrs = SetOfVec::new();

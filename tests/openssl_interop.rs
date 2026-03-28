@@ -141,6 +141,8 @@ fn build_rust_pfx(
 
     let mut builder = Pkcs12Builder::new();
     builder
+        .iterations(Some(2048))
+        .unwrap()
         .cert_kdf_algorithm(Some(kdf))
         .cert_enc_algorithm(Some(enc.clone()))
         .key_kdf_algorithm(Some(kdf))
@@ -403,6 +405,8 @@ fn rust_chain_openssl_reads() {
 
     let mut builder = Pkcs12Builder::new();
     builder
+        .iterations(Some(2048))
+        .unwrap()
         .cert_kdf_algorithm(Some(Pbkdf2Prf::HmacWithSha256))
         .cert_enc_algorithm(Some(EncryptionAlgorithm::Aes256Cbc))
         .key_kdf_algorithm(Some(Pbkdf2Prf::HmacWithSha256))
