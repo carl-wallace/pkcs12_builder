@@ -19,7 +19,10 @@ pub mod mac_data_builder;
 pub mod supported_algs;
 
 #[doc(inline)]
-pub use asn1_utils::{get_auth_safes, get_cert, get_key, get_key_and_cert, get_safe_bags};
+pub use asn1_utils::{
+    CertContents, Pkcs12Contents, get_auth_safes, get_cert, get_key, get_key_and_cert,
+    get_safe_bags,
+};
 #[doc(inline)]
 pub use error::{Error, Result};
 #[doc(inline)]

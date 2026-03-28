@@ -33,6 +33,28 @@ use crate::{
     supported_algs::MacAlgorithm,
 };
 
+/// DER-encoded certificates extracted from a PKCS #12 safe contents.
+pub struct CertContents {
+    /// DER-encoded main (end-entity) certificate.
+    pub cert_der: Vec<u8>,
+    /// DER-encoded additional certificates (CA / intermediate chain).
+    pub additional_cert_ders: Vec<Vec<u8>>,
+    /// Optional `localKeyID` attribute value.
+    pub key_id: Option<Vec<u8>>,
+}
+
+/// Fully decoded contents of a PKCS #12 object.
+pub struct Pkcs12Contents {
+    /// DER-encoded private key.
+    pub key_der: Vec<u8>,
+    /// Parsed end-entity certificate.
+    pub certificate: Certificate,
+    /// Optional `localKeyID` attribute value.
+    pub key_id: Option<Vec<u8>>,
+    /// Parsed additional certificates (CA / intermediate chain).
+    pub additional_certificates: Vec<Certificate>,
+}
+
 /// Returns `true` if the OID identifies a PKCS#12 legacy PBE algorithm.
 #[cfg(feature = "sha1")]
 fn is_pkcs12_pbe_oid(oid: &ObjectIdentifier) -> bool {
@@ -118,26 +140,52 @@ fn pkcs12_pbe_decrypt<'a>(
     }
 }
 
-/// Extract a certificate and optional key ID from decrypted SafeContents bytes.
-fn extract_cert_from_safe_contents(plaintext: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+/// Extract certificates and optional key ID from decrypted SafeContents bytes.
+///
+/// Returns `(main_cert_der, additional_cert_ders, key_id)`. The main certificate is the first
+/// `CertBag` that carries a `localKeyID` attribute, or simply the first `CertBag` if none do.
+/// All remaining `CertBag` entries are returned as additional certificates.
+fn extract_certs_from_safe_contents(
+    plaintext: &[u8],
+) -> Result<CertContents> {
     let safe_bags = SafeContents::from_der(plaintext)?;
+    let mut main_cert: Option<(Vec<u8>, Option<Vec<u8>>)> = None;
+    let mut additional_certs: Vec<Vec<u8>> = Vec::new();
+
     for safe_bag in safe_bags {
         match safe_bag.bag_id {
             pkcs12::PKCS_12_CERT_BAG_OID => {
                 let key_id = get_key_id(safe_bag.bag_attributes);
-
                 let cs: ContextSpecific<CertBag> = ContextSpecific::from_der(&safe_bag.bag_value)?;
+                let cert_der = cs.value.cert_value.as_bytes().to_vec();
 
-                let cb = cs.value;
-                return Ok((cb.cert_value.as_bytes().to_vec(), key_id));
+                if main_cert.as_ref().is_none_or(|mc| mc.1.is_none() && key_id.is_some()) {
+                    // Promote this to main cert; demote any previous main to additional
+                    if let Some((prev_der, _)) = main_cert.take() {
+                        additional_certs.push(prev_der);
+                    }
+                    main_cert = Some((cert_der, key_id));
+                } else {
+                    additional_certs.push(cert_der);
+                }
             }
             _ => {
                 warn!("Unexpected SafeBag type. Ignoring and continuing.");
             }
         };
     }
-    error!("Failed to find certificate bag");
-    Err(Error::NotFound)
+
+    match main_cert {
+        Some((cert_der, key_id)) => Ok(CertContents {
+            cert_der,
+            additional_cert_ders: additional_certs,
+            key_id,
+        }),
+        None => {
+            error!("Failed to find certificate bag");
+            Err(Error::NotFound)
+        }
+    }
 }
 
 /// Takes an [Any] that notionally contains an [OctetString] and returns an [AuthenticateSafe](AuthenticatedSafe)
@@ -260,7 +308,7 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
 /// [SafeContents]. Attempts to decrypt the content using the provided password, then extracts and
 /// returns a tuple containing the DER-encoded certificate from the first certificate bag found and
 /// an optional key identifier.
-pub fn get_cert(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
     let enc_data = EncryptedData::from_der(&content.to_der()?)?;
 
     let Some(ciphertext_os) = enc_data.enc_content_info.encrypted_content else {
@@ -286,7 +334,7 @@ pub fn get_cert(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8
             password,
             &mut ciphertext,
         )?;
-        return extract_cert_from_safe_contents(plaintext);
+        return extract_certs_from_safe_contents(plaintext);
     }
 
     // PBES2 path
@@ -316,7 +364,7 @@ pub fn get_cert(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8
 
     let scheme = pkcs5::EncryptionScheme::from(params.clone());
     let plaintext = scheme.decrypt_in_place(password, &mut ciphertext)?;
-    extract_cert_from_safe_contents(plaintext)
+    extract_certs_from_safe_contents(plaintext)
 }
 
 /// Takes an optional set of Attributes and returns the first value in the key ID attribute if present.
@@ -367,8 +415,8 @@ fn get_key_id(attributes: Option<Attributes>) -> Option<Vec<u8>> {
 pub fn get_key_and_cert(
     der_p12: &[u8],
     password: &str,
-) -> Result<(Vec<u8>, Certificate, Option<Vec<u8>>)> {
-    let mut recovered_cert_and_key_id = None;
+) -> Result<Pkcs12Contents> {
+    let mut recovered_cert_data = None;
     let mut recovered_key_and_key_id = None;
     let pfx = Pfx::from_der(der_p12)?;
     let auth_safes_os = OctetString::from_der(&pfx.auth_safe.content.to_der()?)?;
@@ -382,20 +430,25 @@ pub fn get_key_and_cert(
     let auth_safes = get_auth_safes(&pfx.auth_safe.content)?;
     for auth_safe in auth_safes {
         if ID_ENCRYPTED_DATA == auth_safe.content_type {
-            recovered_cert_and_key_id = Some(get_cert(&auth_safe.content, password)?);
+            recovered_cert_data = Some(get_cert(&auth_safe.content, password)?);
         } else if ID_DATA == auth_safe.content_type {
             recovered_key_and_key_id = Some(get_key(&auth_safe.content, password)?);
         }
     }
-    if let Some((recovered_cert, cert_id)) = recovered_cert_and_key_id
+    if let Some(cert_contents) = recovered_cert_data
         && let Some((recovered_key, key_id)) = recovered_key_and_key_id
     {
-        let key_id = if key_id.is_some() { key_id } else { cert_id };
-        return Ok((
-            recovered_key,
-            Certificate::from_der(&recovered_cert)?,
+        let key_id = if key_id.is_some() { key_id } else { cert_contents.key_id };
+        let mut additional_certificates = Vec::with_capacity(cert_contents.additional_cert_ders.len());
+        for der in &cert_contents.additional_cert_ders {
+            additional_certificates.push(Certificate::from_der(der)?);
+        }
+        return Ok(Pkcs12Contents {
+            key_der: recovered_key,
+            certificate: Certificate::from_der(&cert_contents.cert_der)?,
             key_id,
-        ));
+            additional_certificates,
+        });
     }
     Err(Error::NotFound)
 }

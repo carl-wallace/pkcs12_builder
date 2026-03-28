@@ -38,8 +38,8 @@ fn check_key_and_cert(
         if ID_ENCRYPTED_DATA == auth_safe.content_type {
             // certificate
             let recovered_cert = get_cert(&auth_safe.content, password).unwrap();
-            assert_eq!(recovered_cert.0, cert);
-            assert_eq!(&recovered_cert.1, cert_id);
+            assert_eq!(recovered_cert.cert_der, cert);
+            assert_eq!(&recovered_cert.key_id, cert_id);
         } else if ID_DATA == auth_safe.content_type {
             // key
             let recovered_key = get_key(&auth_safe.content, password).unwrap();
@@ -48,14 +48,13 @@ fn check_key_and_cert(
         }
     }
 
-    let (recovered_key, recovered_cert, recovered_key_id) =
-        get_key_and_cert(der_p12, password).unwrap();
-    assert_eq!(recovered_cert.to_der().unwrap(), cert);
-    assert_eq!(recovered_key, key);
+    let contents = get_key_and_cert(der_p12, password).unwrap();
+    assert_eq!(contents.certificate.to_der().unwrap(), cert);
+    assert_eq!(contents.key_der, key);
     if key_id.is_some() {
-        assert_eq!(&recovered_key_id, key_id);
+        assert_eq!(&contents.key_id, key_id);
     } else {
-        assert_eq!(&recovered_key_id, cert_id);
+        assert_eq!(&contents.key_id, cert_id);
     }
 
     assert!(get_key_and_cert(der_p12, &format!("{password}X")).is_err());
@@ -189,11 +188,10 @@ fn p12_simple() {
         .cert_attributes(Some(cert_attrs.clone()))
         .build_with_rng(&cert.clone(), key, "password", &mut rand::rng())
         .unwrap();
-    let (recovered_key, recovered_cert, recovered_key_id) =
-        get_key_and_cert(&der_pfx, "password").unwrap();
-    assert_eq!(recovered_key, key);
-    assert_eq!(recovered_cert.to_der().unwrap(), cert_bytes);
-    assert_eq!(recovered_key_id, Some(key_id.to_vec()));
+    let contents = get_key_and_cert(&der_pfx, "password").unwrap();
+    assert_eq!(contents.key_der, key);
+    assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
+    assert_eq!(contents.key_id, Some(key_id.to_vec()));
 }
 
 #[test]
@@ -395,10 +393,10 @@ fn p12_builder_test() {
     let der_pfx = p12_builder.build(&cert, key, "").unwrap();
     assert_eq!(der_pfx, orig_p12);
 
-    let (recovered_key, recovered_cert, recovered_key_id) = get_key_and_cert(&der_pfx, "").unwrap();
-    assert_eq!(recovered_cert.to_der().unwrap(), cert_bytes);
-    assert_eq!(recovered_key, key);
-    assert_eq!(recovered_key_id, Some(key_id.to_vec()));
+    let contents = get_key_and_cert(&der_pfx, "").unwrap();
+    assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
+    assert_eq!(contents.key_der, key);
+    assert_eq!(contents.key_id, Some(key_id.to_vec()));
 }
 
 #[test]

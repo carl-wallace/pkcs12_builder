@@ -137,11 +137,11 @@ fn openssl_sha1_mac_rust_reads() {
 
     let p12_bytes = openssl_export_sha1_mac(&cert_pem, &key_pem);
 
-    let (recovered_key, recovered_cert, _) =
+    let contents =
         get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert with SHA1 MAC failed");
 
-    assert_eq!(recovered_key, key_der);
-    assert_eq!(recovered_cert.to_der().unwrap(), cert_der);
+    assert_eq!(contents.key_der, key_der);
+    assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
 }
 
 /// Verify that MAC verification fails with the wrong password on a SHA-1 MAC file.
