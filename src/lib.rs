@@ -64,8 +64,9 @@ use x509_cert::{Certificate, attr::Attribute, spki::AlgorithmIdentifierOwned};
 pub const MAX_ITERATION_COUNT: u32 = 100_000_000;
 
 /// Helper for building [PKCS #12 objects](pkcs12::pfx::Pfx) that contain one private key and one
-/// certificate. No pairwise consistency check between the key and certificate is performed; the
-/// caller is responsible for ensuring they correspond.
+/// certificate, plus optional additional certificates (e.g. CA/intermediate chain certificates).
+/// No pairwise consistency check between the key and certificate is performed; the caller is
+/// responsible for ensuring they correspond.
 ///
 /// For each of the key and certificate a KDF algorithm, an encryption algorithm, and a set of
 /// bag attributes may be specified independently. By default, PBKDF2 with HMAC-SHA-256 is used as
@@ -90,6 +91,7 @@ pub struct Pkcs12Builder {
     mac_data_builder: Option<MacDataBuilder>,
     iterations: Option<u32>,
     omit_mac: bool,
+    additional_certs: Vec<Certificate>,
 }
 
 impl Default for Pkcs12Builder {
@@ -116,12 +118,20 @@ impl Pkcs12Builder {
             mac_data_builder: None,
             iterations: None,
             omit_mac: false,
+            additional_certs: vec![],
         }
     }
 
     /// Set attributes to associated with the certificate included in the generated [PKCS #12 object](pkcs12::pfx::Pfx).
     pub fn cert_attributes(&mut self, attrs: Option<SetOfVec<Attribute>>) -> &mut Self {
         self.cert_attributes = attrs;
+        self
+    }
+    /// Add an additional certificate (e.g. a CA or intermediate certificate) to include in the
+    /// generated [PKCS #12 object](pkcs12::pfx::Pfx). Additional certificates are included as
+    /// `CertBag` entries without `localKeyID` attributes. May be called multiple times.
+    pub fn additional_cert(&mut self, cert: Certificate) -> &mut Self {
+        self.additional_certs.push(cert);
         self
     }
     /// Set the PBKDF2 PRF to use as the KDF when protecting the certificate in the generated
@@ -482,7 +492,20 @@ impl Pkcs12Builder {
             bag_value: der_cert_bag_inner,
             bag_attributes: self.cert_attributes.clone(),
         };
-        let der_cert_safe_bags = vec![cert_safe_bag].to_der()?;
+        let mut cert_safe_bags = vec![cert_safe_bag];
+        for additional_cert in &self.additional_certs {
+            let der_additional = additional_cert.to_der()?;
+            let additional_bag = CertBag {
+                cert_id: PKCS_12_X509_CERT_OID,
+                cert_value: OctetString::new(der_additional)?,
+            };
+            cert_safe_bags.push(SafeBag {
+                bag_id: PKCS_12_CERT_BAG_OID,
+                bag_value: additional_bag.to_der()?,
+                bag_attributes: None,
+            });
+        }
+        let der_cert_safe_bags = cert_safe_bags.to_der()?;
 
         let der_cert_kdf_alg = match &self.cert_kdf_algorithm_identifier {
             Some(cert_kdf_alg) => match &cert_kdf_alg.parameters {

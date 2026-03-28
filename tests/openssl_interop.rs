@@ -256,6 +256,172 @@ fn rust_hmac_sha512_mac_openssl_reads() {
 }
 
 // ---------------------------------------------------------------------------
+// Direction 1b: Rust builds PFX with certificate chain → OpenSSL reads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rust_chain_openssl_reads() {
+    let dir = TempDir::new().expect("temp dir");
+    let ca_key_pem = dir.path().join("ca-key.pem");
+    let ca_cert_pem = dir.path().join("ca-cert.pem");
+    let ee_key_pem = dir.path().join("ee-key.pem");
+    let ee_csr_pem = dir.path().join("ee.csr");
+    let ee_cert_pem = dir.path().join("ee-cert.pem");
+
+    // Generate CA key and self-signed CA cert
+    let ok = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-quiet",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+            ca_key_pem.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn openssl genpkey (CA)");
+    assert!(ok.success(), "openssl genpkey (CA) failed");
+
+    let ok = Command::new("openssl")
+        .args([
+            "req",
+            "-quiet",
+            "-new",
+            "-x509",
+            "-key",
+            ca_key_pem.to_str().unwrap(),
+            "-out",
+            ca_cert_pem.to_str().unwrap(),
+            "-days",
+            "365",
+            "-subj",
+            "/CN=Test CA/O=pkcs12-builder-test",
+        ])
+        .status()
+        .expect("spawn openssl req (CA)");
+    assert!(ok.success(), "openssl req -x509 (CA) failed");
+
+    // Generate EE key and CSR
+    let ok = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-quiet",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+            ee_key_pem.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn openssl genpkey (EE)");
+    assert!(ok.success(), "openssl genpkey (EE) failed");
+
+    let ok = Command::new("openssl")
+        .args([
+            "req",
+            "-quiet",
+            "-new",
+            "-key",
+            ee_key_pem.to_str().unwrap(),
+            "-out",
+            ee_csr_pem.to_str().unwrap(),
+            "-subj",
+            "/CN=Test EE/O=pkcs12-builder-test",
+        ])
+        .status()
+        .expect("spawn openssl req (EE CSR)");
+    assert!(ok.success(), "openssl req (EE CSR) failed");
+
+    // Sign EE cert with CA
+    let ok = Command::new("openssl")
+        .args([
+            "x509",
+            "-req",
+            "-in",
+            ee_csr_pem.to_str().unwrap(),
+            "-CA",
+            ca_cert_pem.to_str().unwrap(),
+            "-CAkey",
+            ca_key_pem.to_str().unwrap(),
+            "-CAcreateserial",
+            "-out",
+            ee_cert_pem.to_str().unwrap(),
+            "-days",
+            "365",
+        ])
+        .output()
+        .expect("spawn openssl x509 -req");
+    assert!(ok.status.success(), "openssl x509 -req (sign EE) failed");
+
+    // Convert EE key to PKCS #8 DER
+    let key_out = Command::new("openssl")
+        .args([
+            "pkey",
+            "-in",
+            ee_key_pem.to_str().unwrap(),
+            "-outform",
+            "DER",
+        ])
+        .output()
+        .expect("spawn openssl pkey (EE)");
+    assert!(key_out.status.success());
+
+    // Convert EE cert to DER
+    let ee_cert_out = Command::new("openssl")
+        .args([
+            "x509",
+            "-in",
+            ee_cert_pem.to_str().unwrap(),
+            "-outform",
+            "DER",
+        ])
+        .output()
+        .expect("spawn openssl x509 (EE)");
+    assert!(ee_cert_out.status.success());
+
+    // Convert CA cert to DER
+    let ca_cert_out = Command::new("openssl")
+        .args([
+            "x509",
+            "-in",
+            ca_cert_pem.to_str().unwrap(),
+            "-outform",
+            "DER",
+        ])
+        .output()
+        .expect("spawn openssl x509 (CA)");
+    assert!(ca_cert_out.status.success());
+
+    let ee_cert = cert_from_der(&ee_cert_out.stdout);
+    let ca_cert = cert_from_der(&ca_cert_out.stdout);
+
+    let mut mac_builder = MacDataBuilder::new(MacAlgorithm::HmacSha256);
+    mac_builder.iterations(Some(2048)).unwrap();
+
+    let mut builder = Pkcs12Builder::new();
+    builder
+        .cert_kdf_algorithm(Some(Pbkdf2Prf::HmacWithSha256))
+        .cert_enc_algorithm(Some(EncryptionAlgorithm::Aes256Cbc))
+        .key_kdf_algorithm(Some(Pbkdf2Prf::HmacWithSha256))
+        .key_enc_algorithm(Some(EncryptionAlgorithm::Aes256Cbc))
+        .mac_data_builder(Some(mac_builder))
+        .additional_cert(ca_cert);
+
+    let mut rng = rand::rng();
+    let p12 = builder
+        .build_with_rng(&ee_cert, &key_out.stdout, PASSWORD, &mut rng)
+        .expect("build_with_rng with chain");
+
+    assert!(
+        openssl_verify(&p12, PASSWORD),
+        "OpenSSL failed to read PFX with certificate chain"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Direction 2: OpenSSL builds PFX → Rust parses it
 // ---------------------------------------------------------------------------
 
