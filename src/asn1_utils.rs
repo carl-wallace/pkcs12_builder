@@ -142,9 +142,9 @@ fn pkcs12_pbe_decrypt<'a>(
 
 /// Extract certificates and optional key ID from decrypted SafeContents bytes.
 ///
-/// Returns `(main_cert_der, additional_cert_ders, key_id)`. The main certificate is the first
-/// `CertBag` that carries a `localKeyID` attribute, or simply the first `CertBag` if none do.
-/// All remaining `CertBag` entries are returned as additional certificates.
+/// Returns a [CertContents]. The main certificate is the first `CertBag` that carries a
+/// `localKeyID` attribute, or simply the first `CertBag` if none do. All remaining `CertBag`
+/// entries are returned as additional certificates.
 fn extract_certs_from_safe_contents(
     plaintext: &[u8],
 ) -> Result<CertContents> {
@@ -306,8 +306,8 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
 
 /// Takes an [Any] that notionally contains an [EncryptedData] whose payload is an encrypted
 /// [SafeContents]. Attempts to decrypt the content using the provided password, then extracts and
-/// returns a tuple containing the DER-encoded certificate from the first certificate bag found and
-/// an optional key identifier.
+/// returns a [CertContents] containing the DER-encoded end-entity certificate, any additional
+/// certificate DER blobs, and an optional key identifier.
 pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
     let enc_data = EncryptedData::from_der(&content.to_der()?)?;
 
@@ -383,7 +383,8 @@ fn get_key_id(attributes: Option<Attributes>) -> Option<Vec<u8>> {
 }
 
 /// Takes a DER-encoded [PKCS #12 object](pkcs12::pfx::Pfx) and password, attempts to decrypt it and, if successful, returns
-/// a tuple containing a private key, a [Certificate] object, and an optional key identifier.
+/// a [Pkcs12Contents] containing the private key, the end-entity [Certificate], an optional key
+/// identifier, and any additional certificates (e.g. CA/intermediate chain certificates).
 ///
 /// This method assumes this basic high-level representation of the structure (though the order of
 /// the AuthenticatedSafe elements is unimportant).
