@@ -145,9 +145,7 @@ fn pkcs12_pbe_decrypt<'a>(
 /// Returns a [CertContents]. The main certificate is the first `CertBag` that carries a
 /// `localKeyID` attribute, or simply the first `CertBag` if none do. All remaining `CertBag`
 /// entries are returned as additional certificates.
-fn extract_certs_from_safe_contents(
-    plaintext: &[u8],
-) -> Result<CertContents> {
+fn extract_certs_from_safe_contents(plaintext: &[u8]) -> Result<CertContents> {
     let safe_bags = SafeContents::from_der(plaintext)?;
     let mut main_cert: Option<(Vec<u8>, Option<Vec<u8>>)> = None;
     let mut additional_certs: Vec<Vec<u8>> = Vec::new();
@@ -159,7 +157,10 @@ fn extract_certs_from_safe_contents(
                 let cs: ContextSpecific<CertBag> = ContextSpecific::from_der(&safe_bag.bag_value)?;
                 let cert_der = cs.value.cert_value.as_bytes().to_vec();
 
-                if main_cert.as_ref().is_none_or(|mc| mc.1.is_none() && key_id.is_some()) {
+                if main_cert
+                    .as_ref()
+                    .is_none_or(|mc| mc.1.is_none() && key_id.is_some())
+                {
                     // Promote this to main cert; demote any previous main to additional
                     if let Some((prev_der, _)) = main_cert.take() {
                         additional_certs.push(prev_der);
@@ -413,10 +414,7 @@ fn get_key_id(attributes: Option<Attributes>) -> Option<Vec<u8>> {
 ///     }
 ///   }
 /// ```
-pub fn get_key_and_cert(
-    der_p12: &[u8],
-    password: &str,
-) -> Result<Pkcs12Contents> {
+pub fn get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents> {
     let mut recovered_cert_data = None;
     let mut recovered_key_and_key_id = None;
     let pfx = Pfx::from_der(der_p12)?;
@@ -439,8 +437,13 @@ pub fn get_key_and_cert(
     if let Some(cert_contents) = recovered_cert_data
         && let Some((recovered_key, key_id)) = recovered_key_and_key_id
     {
-        let key_id = if key_id.is_some() { key_id } else { cert_contents.key_id };
-        let mut additional_certificates = Vec::with_capacity(cert_contents.additional_cert_ders.len());
+        let key_id = if key_id.is_some() {
+            key_id
+        } else {
+            cert_contents.key_id
+        };
+        let mut additional_certificates =
+            Vec::with_capacity(cert_contents.additional_cert_ders.len());
         for der in &cert_contents.additional_cert_ders {
             additional_certificates.push(Certificate::from_der(der)?);
         }

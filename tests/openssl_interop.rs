@@ -523,10 +523,12 @@ fn openssl_builds_rust_reads() {
 
     let p12_bytes = openssl_export(&cert_pem, &key_pem);
 
-    let contents =
-        get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert failed");
+    let contents = get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert failed");
 
-    assert!(!contents.key_der.is_empty(), "recovered key must not be empty");
+    assert!(
+        !contents.key_der.is_empty(),
+        "recovered key must not be empty"
+    );
 
     // The subject should contain the CN we encoded above
     let subject = contents.certificate.tbs_certificate().subject().to_string();
