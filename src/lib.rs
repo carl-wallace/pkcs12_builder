@@ -27,6 +27,9 @@ pub use asn1_utils::{
 pub use error::{Error, Result};
 #[doc(inline)]
 pub use mac_data_builder::MacDataBuilder;
+#[cfg(feature = "legacy")]
+#[doc(inline)]
+pub use supported_algs::LegacyPbeAlgorithm;
 #[doc(inline)]
 pub use supported_algs::{EncryptionAlgorithm, MacAlgorithm};
 
@@ -81,6 +84,9 @@ pub const MAX_ITERATION_COUNT: u32 = 100_000_000;
 /// Use [`build_with_rng`](Pkcs12Builder::build_with_rng) to let the builder generate all required
 /// random material (salts and IVs) automatically. Use [`build`](Pkcs12Builder::build) only when
 /// all algorithm identifiers have been fully populated beforehand.
+///
+/// A builder instance should not be reused after a failed call to `build_with_rng`, as
+/// internal state may be partially populated. Create a new `Pkcs12Builder` instead.
 pub struct Pkcs12Builder {
     cert_attributes: Option<SetOfVec<Attribute>>,
     cert_kdf_algorithm: Option<Pbkdf2Prf>,
@@ -96,6 +102,14 @@ pub struct Pkcs12Builder {
     iterations: Option<u32>,
     omit_mac: bool,
     additional_certs: Vec<Certificate>,
+    #[cfg(feature = "legacy")]
+    cert_legacy_pbe: Option<LegacyPbeAlgorithm>,
+    #[cfg(feature = "legacy")]
+    key_legacy_pbe: Option<LegacyPbeAlgorithm>,
+    #[cfg(feature = "legacy")]
+    cert_legacy_pbe_salt: Option<Vec<u8>>,
+    #[cfg(feature = "legacy")]
+    key_legacy_pbe_salt: Option<Vec<u8>>,
 }
 
 impl Default for Pkcs12Builder {
@@ -123,6 +137,14 @@ impl Pkcs12Builder {
             iterations: None,
             omit_mac: false,
             additional_certs: vec![],
+            #[cfg(feature = "legacy")]
+            cert_legacy_pbe: None,
+            #[cfg(feature = "legacy")]
+            key_legacy_pbe: None,
+            #[cfg(feature = "legacy")]
+            cert_legacy_pbe_salt: None,
+            #[cfg(feature = "legacy")]
+            key_legacy_pbe_salt: None,
         }
     }
 
@@ -290,6 +312,56 @@ impl Pkcs12Builder {
         self
     }
 
+    /// Set a legacy PKCS#12 PBE algorithm for the certificate bag. When set, the certificate
+    /// will be encrypted using the specified legacy PBE algorithm instead of PBES2. Clears any
+    /// previously set PBES2 cert KDF/encryption algorithm settings.
+    #[cfg(feature = "legacy")]
+    pub fn cert_legacy_pbe_algorithm(&mut self, alg: Option<LegacyPbeAlgorithm>) -> &mut Self {
+        if alg.is_some() {
+            self.cert_kdf_algorithm = None;
+            self.cert_enc_algorithm = None;
+            self.cert_kdf_algorithm_identifier = None;
+            self.cert_enc_algorithm_identifier = None;
+        }
+        self.cert_legacy_pbe = alg;
+        self
+    }
+
+    /// Set the salt for legacy PBE encryption of the certificate bag. Only used when a legacy PBE
+    /// algorithm is set via [`cert_legacy_pbe_algorithm`](Pkcs12Builder::cert_legacy_pbe_algorithm).
+    /// When using [`build_with_rng`](Pkcs12Builder::build_with_rng), a random salt is generated
+    /// automatically if none is set.
+    #[cfg(feature = "legacy")]
+    pub fn cert_legacy_pbe_salt(&mut self, salt: Option<Vec<u8>>) -> &mut Self {
+        self.cert_legacy_pbe_salt = salt;
+        self
+    }
+
+    /// Set the salt for legacy PBE encryption of the key bag. Only used when a legacy PBE
+    /// algorithm is set via [`key_legacy_pbe_algorithm`](Pkcs12Builder::key_legacy_pbe_algorithm).
+    /// When using [`build_with_rng`](Pkcs12Builder::build_with_rng), a random salt is generated
+    /// automatically if none is set.
+    #[cfg(feature = "legacy")]
+    pub fn key_legacy_pbe_salt(&mut self, salt: Option<Vec<u8>>) -> &mut Self {
+        self.key_legacy_pbe_salt = salt;
+        self
+    }
+
+    /// Set a legacy PKCS#12 PBE algorithm for the key bag. When set, the key will be encrypted
+    /// using the specified legacy PBE algorithm instead of PBES2. Clears any previously set
+    /// PBES2 key KDF/encryption algorithm settings.
+    #[cfg(feature = "legacy")]
+    pub fn key_legacy_pbe_algorithm(&mut self, alg: Option<LegacyPbeAlgorithm>) -> &mut Self {
+        if alg.is_some() {
+            self.key_kdf_algorithm = None;
+            self.key_enc_algorithm = None;
+            self.key_kdf_algorithm_identifier = None;
+            self.key_enc_algorithm_identifier = None;
+        }
+        self.key_legacy_pbe = alg;
+        self
+    }
+
     fn default_mac_data<R>(rng: &mut R, iterations: u32) -> Result<MacDataBuilder>
     where
         R: CryptoRng,
@@ -442,18 +514,28 @@ impl Pkcs12Builder {
             });
         }
 
-        if self.cert_kdf_algorithm_identifier.is_none() {
+        #[cfg(feature = "legacy")]
+        let use_cert_legacy = self.cert_legacy_pbe.is_some();
+        #[cfg(not(feature = "legacy"))]
+        let use_cert_legacy = false;
+
+        #[cfg(feature = "legacy")]
+        let use_key_legacy = self.key_legacy_pbe.is_some();
+        #[cfg(not(feature = "legacy"))]
+        let use_key_legacy = false;
+
+        if !use_cert_legacy && self.cert_kdf_algorithm_identifier.is_none() {
             self.cert_kdf_algorithm_identifier =
                 Some(Self::default_kdf_alg(rng, self.get_iterations() as u32)?);
         }
-        if self.cert_enc_algorithm_identifier.is_none() {
+        if !use_cert_legacy && self.cert_enc_algorithm_identifier.is_none() {
             self.cert_enc_algorithm_identifier = Some(Self::default_enc_alg(rng)?);
         }
-        if self.key_kdf_algorithm_identifier.is_none() {
+        if !use_key_legacy && self.key_kdf_algorithm_identifier.is_none() {
             self.key_kdf_algorithm_identifier =
                 Some(Self::default_kdf_alg(rng, self.get_iterations() as u32)?);
         }
-        if self.key_enc_algorithm_identifier.is_none() {
+        if !use_key_legacy && self.key_enc_algorithm_identifier.is_none() {
             self.key_enc_algorithm_identifier = Some(Self::default_enc_alg(rng)?);
         }
         if self.mac_data_builder.is_none() && !self.omit_mac {
@@ -469,11 +551,29 @@ impl Pkcs12Builder {
             rng.fill_bytes(salt.as_mut_slice());
             mdb.salt(Some(salt));
         }
+        #[cfg(feature = "legacy")]
+        {
+            if self.cert_legacy_pbe.is_some() && self.cert_legacy_pbe_salt.is_none() {
+                let mut salt = vec![0u8; 16];
+                rng.fill_bytes(salt.as_mut_slice());
+                self.cert_legacy_pbe_salt = Some(salt);
+            }
+            if self.key_legacy_pbe.is_some() && self.key_legacy_pbe_salt.is_none() {
+                let mut salt = vec![0u8; 16];
+                rng.fill_bytes(salt.as_mut_slice());
+                self.key_legacy_pbe_salt = Some(salt);
+            }
+        }
         let result = self.build(certificate, key, password);
         self.cert_kdf_algorithm_identifier = None;
         self.cert_enc_algorithm_identifier = None;
         self.key_kdf_algorithm_identifier = None;
         self.key_enc_algorithm_identifier = None;
+        #[cfg(feature = "legacy")]
+        {
+            self.cert_legacy_pbe_salt = None;
+            self.key_legacy_pbe_salt = None;
+        }
         if let Some(mdb) = &mut self.mac_data_builder {
             mdb.salt(None);
         }
@@ -481,36 +581,12 @@ impl Pkcs12Builder {
         result
     }
 
-    /// Builds a [PKCS #12 object](pkcs12::pfx::Pfx) containing the provided certificate and key protected using password-based
-    /// encryption and MAC. KDF, encryption and, except where `omit_mac` is used, MAC information must have been previously provided to
-    /// successfully use this function. To use default values, use the build_with_rng function.
-    pub fn build(&self, certificate: &Certificate, key: &[u8], password: &str) -> Result<Vec<u8>> {
-        let der_cert = certificate.to_der()?;
-        let cert_bag = CertBag {
-            cert_id: PKCS_12_X509_CERT_OID,
-            cert_value: OctetString::new(der_cert.clone())?,
-        };
-        let der_cert_bag_inner = cert_bag.to_der()?;
-        let cert_safe_bag = SafeBag {
-            bag_id: PKCS_12_CERT_BAG_OID,
-            bag_value: der_cert_bag_inner,
-            bag_attributes: self.cert_attributes.clone(),
-        };
-        let mut cert_safe_bags = vec![cert_safe_bag];
-        for additional_cert in &self.additional_certs {
-            let der_additional = additional_cert.to_der()?;
-            let additional_bag = CertBag {
-                cert_id: PKCS_12_X509_CERT_OID,
-                cert_value: OctetString::new(der_additional)?,
-            };
-            cert_safe_bags.push(SafeBag {
-                bag_id: PKCS_12_CERT_BAG_OID,
-                bag_value: additional_bag.to_der()?,
-                bag_attributes: None,
-            });
-        }
-        let der_cert_safe_bags = cert_safe_bags.to_der()?;
-
+    /// Build PBES2 EncryptedData for the certificate bag.
+    fn build_pbes2_cert_encrypted_data(
+        &self,
+        der_cert_safe_bags: &[u8],
+        password: &str,
+    ) -> Result<EncryptedData> {
         let der_cert_kdf_alg = match &self.cert_kdf_algorithm_identifier {
             Some(cert_kdf_alg) => match &cert_kdf_alg.parameters {
                 Some(params) => params.to_der()?,
@@ -545,7 +621,7 @@ impl Pkcs12Builder {
         };
         let cert_scheme = pkcs5::EncryptionScheme::from(cert_params.clone());
         let mut enc_buf = Zeroizing::new(vec![]);
-        enc_buf.extend_from_slice(&der_cert_safe_bags);
+        enc_buf.extend_from_slice(der_cert_safe_bags);
         enc_buf.extend_from_slice(&[0u8; 16]);
         let cert_ciphertext =
             match cert_scheme.encrypt_in_place(password, &mut enc_buf, der_cert_safe_bags.len()) {
@@ -560,7 +636,7 @@ impl Pkcs12Builder {
         let der_cert_params = cert_params.to_der()?;
         let der_cert_params_ref = AnyRef::try_from(der_cert_params.as_slice())?;
 
-        let enc_data1 = EncryptedData {
+        Ok(EncryptedData {
             version: CmsVersion::V0,
             enc_content_info: EncryptedContentInfo {
                 content_type: ID_DATA,
@@ -571,10 +647,11 @@ impl Pkcs12Builder {
                 encrypted_content: Some(OctetString::new(cert_ciphertext)?),
             },
             unprotected_attrs: None,
-        };
-        let der_enc_data1 = enc_data1.to_der()?;
-        let der_data_ref1 = AnyRef::try_from(der_enc_data1.as_slice())?;
+        })
+    }
 
+    /// Build PBES2 encrypted DER for the key bag.
+    fn build_pbes2_key_encrypted_data(&self, key: &[u8], password: &str) -> Result<Vec<u8>> {
         let der_key_kdf_alg = match &self.key_kdf_algorithm_identifier {
             Some(key_kdf_alg) => match &key_kdf_alg.parameters {
                 Some(params) => params.to_der()?,
@@ -620,7 +697,112 @@ impl Pkcs12Builder {
             encryption_algorithm: key_scheme,
             encrypted_data: OctetString::new(key_ciphertext)?,
         };
-        let der_enc_epki = enc_epki.to_der()?;
+        Ok(enc_epki.to_der()?)
+    }
+
+    /// Builds a [PKCS #12 object](pkcs12::pfx::Pfx) containing the provided certificate and key protected using password-based
+    /// encryption and MAC. KDF, encryption and, except where `omit_mac` is used, MAC information must have been previously provided to
+    /// successfully use this function. To use default values, use the build_with_rng function.
+    pub fn build(&self, certificate: &Certificate, key: &[u8], password: &str) -> Result<Vec<u8>> {
+        let der_cert = certificate.to_der()?;
+        let cert_bag = CertBag {
+            cert_id: PKCS_12_X509_CERT_OID,
+            cert_value: OctetString::new(der_cert.clone())?,
+        };
+        let der_cert_bag_inner = cert_bag.to_der()?;
+        let cert_safe_bag = SafeBag {
+            bag_id: PKCS_12_CERT_BAG_OID,
+            bag_value: der_cert_bag_inner,
+            bag_attributes: self.cert_attributes.clone(),
+        };
+        let mut cert_safe_bags = vec![cert_safe_bag];
+        for additional_cert in &self.additional_certs {
+            let der_additional = additional_cert.to_der()?;
+            let additional_bag = CertBag {
+                cert_id: PKCS_12_X509_CERT_OID,
+                cert_value: OctetString::new(der_additional)?,
+            };
+            cert_safe_bags.push(SafeBag {
+                bag_id: PKCS_12_CERT_BAG_OID,
+                bag_value: additional_bag.to_der()?,
+                bag_attributes: None,
+            });
+        }
+        let der_cert_safe_bags = cert_safe_bags.to_der()?;
+
+        // --- Cert bag encryption ---
+        #[cfg(feature = "legacy")]
+        let enc_data1 = if let Some(legacy_alg) = &self.cert_legacy_pbe {
+            let iterations = self.get_iterations();
+            let salt = self.cert_legacy_pbe_salt.as_ref().ok_or_else(|| {
+                Error::General(String::from(
+                    "No salt provided for certificate legacy PBE. Use build_with_rng to generate salts automatically.",
+                ))
+            })?;
+            let cert_ciphertext =
+                pkcs12_pbe_encrypt(legacy_alg, password, salt, iterations, &der_cert_safe_bags)?;
+
+            let pbe_params = pkcs12::pbe_params::Pkcs12PbeParams {
+                salt: OctetString::new(salt.clone())?,
+                iterations,
+            };
+            let der_pbe_params = pbe_params.to_der()?;
+            let der_pbe_params_ref = AnyRef::try_from(der_pbe_params.as_slice())?;
+
+            EncryptedData {
+                version: CmsVersion::V0,
+                enc_content_info: EncryptedContentInfo {
+                    content_type: ID_DATA,
+                    content_enc_alg: AlgorithmIdentifier {
+                        oid: legacy_alg.oid(),
+                        parameters: Some(Any::from(der_pbe_params_ref)),
+                    },
+                    encrypted_content: Some(OctetString::new(cert_ciphertext)?),
+                },
+                unprotected_attrs: None,
+            }
+        } else {
+            self.build_pbes2_cert_encrypted_data(&der_cert_safe_bags, password)?
+        };
+
+        #[cfg(not(feature = "legacy"))]
+        let enc_data1 = self.build_pbes2_cert_encrypted_data(&der_cert_safe_bags, password)?;
+
+        let der_enc_data1 = enc_data1.to_der()?;
+        let der_data_ref1 = AnyRef::try_from(der_enc_data1.as_slice())?;
+
+        // --- Key bag encryption ---
+        #[cfg(feature = "legacy")]
+        let der_enc_epki = if let Some(legacy_alg) = &self.key_legacy_pbe {
+            let iterations = self.get_iterations();
+            let salt = self.key_legacy_pbe_salt.as_ref().ok_or_else(|| {
+                Error::General(String::from(
+                    "No salt provided for key legacy PBE. Use build_with_rng to generate salts automatically.",
+                ))
+            })?;
+            let key_ciphertext = pkcs12_pbe_encrypt(legacy_alg, password, salt, iterations, key)?;
+
+            let pbe_params = pkcs12::pbe_params::Pkcs12PbeParams {
+                salt: OctetString::new(salt.clone())?,
+                iterations,
+            };
+            let der_pbe_params = pbe_params.to_der()?;
+            let der_pbe_params_ref = AnyRef::try_from(der_pbe_params.as_slice())?;
+
+            let epki = pkcs12::pbe_params::EncryptedPrivateKeyInfo {
+                encryption_algorithm: AlgorithmIdentifierOwned {
+                    oid: legacy_alg.oid(),
+                    parameters: Some(Any::from(der_pbe_params_ref)),
+                },
+                encrypted_data: OctetString::new(key_ciphertext)?,
+            };
+            epki.to_der()?
+        } else {
+            self.build_pbes2_key_encrypted_data(key, password)?
+        };
+
+        #[cfg(not(feature = "legacy"))]
+        let der_enc_epki = self.build_pbes2_key_encrypted_data(key, password)?;
 
         let shrouded_key_bag = SafeBag {
             bag_id: PKCS_12_PKCS8_KEY_BAG_OID,
@@ -670,6 +852,57 @@ impl Pkcs12Builder {
             mac_data,
         };
         Ok(pfx.to_der()?)
+    }
+}
+
+/// Encrypt data using a PKCS#12 legacy PBE scheme (SHA-1 based KDF with 3DES-CBC or RC2-CBC).
+#[cfg(feature = "legacy")]
+fn pkcs12_pbe_encrypt(
+    alg: &LegacyPbeAlgorithm,
+    password: &str,
+    salt: &[u8],
+    iterations: i32,
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    use cbc::cipher::{BlockModeEncrypt, InnerIvInit, KeyIvInit, block_padding::Pkcs7};
+    use pkcs12::kdf::{Pkcs12KeyType, derive_key_utf8};
+    use sha1::Sha1;
+
+    let key = Zeroizing::new(derive_key_utf8::<Sha1>(
+        password,
+        salt,
+        Pkcs12KeyType::EncryptionKey,
+        iterations,
+        alg.key_len(),
+    )?);
+    let iv = Zeroizing::new(derive_key_utf8::<Sha1>(
+        password,
+        salt,
+        Pkcs12KeyType::Iv,
+        iterations,
+        alg.iv_len(),
+    )?);
+
+    // Allocate buffer with room for padding (up to one block = 8 bytes)
+    let mut buf = vec![0u8; plaintext.len() + 8];
+    buf[..plaintext.len()].copy_from_slice(plaintext);
+
+    match alg {
+        LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc => {
+            let ct = cbc::Encryptor::<des::TdesEde3>::new_from_slices(&key, &iv)
+                .map_err(|e| Error::General(format!("Failed to init 3DES-CBC encryptor: {e}")))?
+                .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
+                .map_err(|e| Error::General(format!("3DES-CBC encryption failed: {e}")))?;
+            Ok(ct.to_vec())
+        }
+        LegacyPbeAlgorithm::ShaAnd128BitRc2Cbc => {
+            let cipher = rc2::Rc2::new_with_eff_key_len(&key, 128);
+            let ct = cbc::Encryptor::<rc2::Rc2>::inner_iv_slice_init(cipher, &iv)
+                .map_err(|e| Error::General(format!("Failed to init RC2-128-CBC encryptor: {e}")))?
+                .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
+                .map_err(|e| Error::General(format!("RC2-128-CBC encryption failed: {e}")))?;
+            Ok(ct.to_vec())
+        }
     }
 }
 

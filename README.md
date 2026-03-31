@@ -2,16 +2,31 @@
 
 Standalone library crate for building and parsing PKCS #12 objects.
 
-[PKCS #12](https://datatracker.ietf.org/doc/html/rfc7292) defines a portable format for storing and transporting a user's private keys and certificates. 
+[PKCS #12](https://datatracker.ietf.org/doc/html/rfc7292) defines a portable format for storing and transporting a user's private keys and certificates.
 This crate provides [Pkcs12Builder] for creating a `Pfx` containing one private key and one certificate, plus optional additional certificates (e.g. CA/intermediate chain certificates), all protected with password-based encryption (PBES2 / PBKDF2 by default) and a password-based MAC,
 and [MacDataBuilder] for creating the `MacData` structure included in a `Pfx`.
 
 Helper functions [add_key_id_attr] and [add_friendly_name_attr] are provided for setting the `localKeyID` and `friendlyName` PKCS #9 attributes on certificate and key bags.
 
+## Features
+
+- PBES2 encryption with configurable PBKDF2 PRF and AES-CBC cipher
+- Configurable MAC algorithm and iteration count
+- Optional additional certificates (CA/intermediate chain)
+- `localKeyID` and `friendlyName` attribute helpers
+- Parsing and decryption of existing PKCS #12 files via [get_key_and_cert]
+- Legacy PKCS #12 PBE support (SHA-1/3DES-CBC, SHA-1/RC2-CBC) with the `legacy` feature
+
 ## Quick start
 
 ```rust,ignore
-// instantiate key and cert variables
+use der::asn1::SetOfVec;
+use pkcs12_builder::{Pkcs12Builder, MacDataBuilder, add_key_id_attr, add_friendly_name_attr};
+use pkcs12_builder::asn1_utils::get_key_and_cert;
+use pkcs12_builder::supported_algs::{EncryptionAlgorithm, MacAlgorithm};
+use rand::rngs::OsRng;
+
+// Assume `cert` is a parsed x509_cert::Certificate and `key` is DER-encoded PKCS #8
 let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
 
 let mut cert_attrs = SetOfVec::new();
@@ -20,12 +35,133 @@ add_friendly_name_attr(&mut cert_attrs, "My Certificate").unwrap();
 
 let mut key_attrs = SetOfVec::new();
 add_key_id_attr(&mut key_attrs, &key_id).unwrap();
-let der_pfx = Pkcs12Builder::new()
-    .key_attributes(Some(key_attrs.clone()))
-    .cert_attributes(Some(cert_attrs.clone()))
-    .build_with_rng(&cert.clone(), key, "password", &mut OsRng)
+
+let mut mac_builder = MacDataBuilder::new(MacAlgorithm::HmacSha256);
+mac_builder.iterations(Some(600_000)).unwrap();
+
+let mut builder = Pkcs12Builder::new();
+builder
+    .iterations(Some(600_000)).unwrap()
+    .cert_attributes(Some(cert_attrs))
+    .key_attributes(Some(key_attrs))
+    .mac_data_builder(Some(mac_builder));
+
+let der_pfx = builder
+    .build_with_rng(&cert, key, "password", &mut OsRng)
     .unwrap();
+
+// Round-trip: parse back the PKCS #12 file
 let contents = get_key_and_cert(&der_pfx, "password").unwrap();
-assert_eq!(contents.key_der, key);
-assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
+assert_eq!(contents.key_der.as_ref(), key);
+assert_eq!(contents.certificate, cert);
 ```
+
+## API reference
+
+### `Pkcs12Builder`
+
+Builder for PKCS #12 objects containing one key, one certificate, and optional additional certificates. Default algorithms: PBKDF2-HMAC-SHA-256 KDF, AES-256-CBC encryption, HMAC-SHA-256 MAC. Default iteration count: 600,000.
+
+| Method | Description |
+|--------|-------------|
+| `new()` | Create a builder with default settings |
+| `iterations(Option<u32>)` | Set PBKDF2 iteration count for encryption and MAC KDFs (max `i32::MAX`) |
+| `cert_kdf_algorithm(Option<Pbkdf2Prf>)` | PBKDF2 PRF for the certificate bag |
+| `cert_enc_algorithm(Option<EncryptionAlgorithm>)` | Encryption algorithm for the certificate bag |
+| `key_kdf_algorithm(Option<Pbkdf2Prf>)` | PBKDF2 PRF for the key bag |
+| `key_enc_algorithm(Option<EncryptionAlgorithm>)` | Encryption algorithm for the key bag |
+| `cert_kdf_algorithm_identifier(Option<AlgorithmIdentifierOwned>)` | Fully populated KDF AlgorithmIdentifier for the cert bag (overrides `cert_kdf_algorithm`) |
+| `cert_enc_algorithm_identifier(Option<AlgorithmIdentifierOwned>)` | Fully populated encryption AlgorithmIdentifier for the cert bag (overrides `cert_enc_algorithm`) |
+| `key_kdf_algorithm_identifier(Option<AlgorithmIdentifierOwned>)` | Fully populated KDF AlgorithmIdentifier for the key bag (overrides `key_kdf_algorithm`) |
+| `key_enc_algorithm_identifier(Option<AlgorithmIdentifierOwned>)` | Fully populated encryption AlgorithmIdentifier for the key bag (overrides `key_enc_algorithm`) |
+| `cert_attributes(Option<SetOfVec<Attribute>>)` | Attributes for the certificate `SafeBag` |
+| `key_attributes(Option<SetOfVec<Attribute>>)` | Attributes for the key `SafeBag` |
+| `additional_cert(Certificate)` | Add a CA/intermediate certificate (may be called multiple times) |
+| `mac_data_builder(Option<MacDataBuilder>)` | Set a custom `MacDataBuilder` (sets `omit_mac` to false) |
+| `omit_mac()` | Omit the MAC from the generated PKCS #12 (not recommended) |
+| `cert_legacy_pbe_algorithm(Option<LegacyPbeAlgorithm>)` | Use legacy PBE for the cert bag (`legacy` feature; clears PBES2 settings) |
+| `key_legacy_pbe_algorithm(Option<LegacyPbeAlgorithm>)` | Use legacy PBE for the key bag (`legacy` feature; clears PBES2 settings) |
+| `cert_legacy_pbe_salt(Option<Vec<u8>>)` | Set the salt for legacy PBE cert encryption (`legacy` feature; optional, generated by `build_with_rng` if not set) |
+| `key_legacy_pbe_salt(Option<Vec<u8>>)` | Set the salt for legacy PBE key encryption (`legacy` feature; optional, generated by `build_with_rng` if not set) |
+| `build_with_rng(&mut self, &Certificate, &[u8], &str, &mut R)` | Build, generating random salts/IVs from the provided RNG. Do not reuse the builder after a failed call; create a new one instead. |
+| `build(&self, &Certificate, &[u8], &str)` | Build using previously supplied algorithm identifiers (advanced) |
+
+### `MacDataBuilder`
+
+Builder for the `MacData` integrity structure.
+
+| Method | Description |
+|--------|-------------|
+| `new(MacAlgorithm)` | Create with the given digest algorithm (no salt; default 600,000 iterations) |
+| `new_with_salt(MacAlgorithm, Vec<u8>)` | Create with a pre-set salt |
+| `salt(Option<Vec<u8>>)` | Set or clear the salt |
+| `has_salt()` | Returns `true` if a salt is set |
+| `iterations(Option<u32>)` | Set the iteration count (max `i32::MAX`; default 600,000) |
+| `build(&self, &str, &[u8])` | Compute the MAC and return a `MacData` |
+
+### Supported algorithm enums
+
+**`EncryptionAlgorithm`** — PBES2 content encryption ciphers:
+- `Aes128Cbc`
+- `Aes192Cbc`
+- `Aes256Cbc`
+
+**`MacAlgorithm`** — HMAC digest algorithms for MAC:
+- `HmacSha256`
+- `HmacSha384`
+- `HmacSha512`
+- `HmacSha1` (`legacy` feature only)
+
+**`LegacyPbeAlgorithm`** (`legacy` feature only) — legacy PKCS #12 PBE schemes:
+- `ShaAnd3KeyTripleDesCbc` — pbeWithSHAAnd3-KeyTripleDES-CBC (OID 1.2.840.113549.1.12.1.3)
+- `ShaAnd128BitRc2Cbc` — pbeWithSHAAnd128BitRC2-CBC (OID 1.2.840.113549.1.12.1.5)
+
+### Constants
+
+- **`MAX_ITERATION_COUNT: u32`** — Maximum iteration count accepted when parsing (100,000,000). Protects against denial-of-service via crafted PKCS #12 files.
+
+### Parsing
+
+**`get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents>`**
+
+Decrypt a DER-encoded PKCS #12 file and return its contents.
+
+**`Pkcs12Contents`** fields:
+- `key_der: Zeroizing<Vec<u8>>` — DER-encoded private key
+- `certificate: Certificate` — parsed end-entity certificate
+- `key_id: Option<Vec<u8>>` — optional `localKeyID` attribute value
+- `friendly_name: Option<String>` — optional `friendlyName` attribute value
+- `additional_certificates: Vec<Certificate>` — CA/intermediate chain certificates
+
+### Lower-level parsing helpers
+
+| Function | Description |
+|----------|-------------|
+| `get_auth_safes(&Any)` | Extract `AuthenticatedSafe` from a `Pfx` content field |
+| `get_safe_bags(&Any)` | Extract `SafeContents` from an `AuthenticatedSafe` entry |
+| `get_key(&Any, &str)` | Decrypt and return the key from a `SafeContents` (returns `KeyContents`) |
+| `get_cert(&Any, &str)` | Decrypt and return certificate data from an `EncryptedData` (returns `CertContents`) |
+
+**`KeyContents`** — type alias for `(Zeroizing<Vec<u8>>, Option<Vec<u8>>)`: the decrypted key bytes (zeroized on drop) and an optional `localKeyID`.
+
+**`CertContents`** fields:
+- `cert_der: Vec<u8>` — DER-encoded main (end-entity) certificate
+- `additional_cert_ders: Vec<Vec<u8>>` — DER-encoded additional certificates (CA / intermediate chain)
+- `key_id: Option<Vec<u8>>` — optional `localKeyID` attribute value
+- `friendly_name: Option<String>` — optional `friendlyName` attribute value
+
+### Attribute helpers
+
+- **`add_key_id_attr(attrs: &mut SetOfVec<Attribute>, key_id: &[u8])`** — Add a `localKeyID` attribute
+- **`add_friendly_name_attr(attrs: &mut SetOfVec<Attribute>, name: &str)`** — Add a `friendlyName` attribute (BMP string)
+
+## `legacy` feature
+
+Enable the `legacy` feature to support legacy PKCS #12 PBE algorithms (SHA-1/3DES-CBC, SHA-1/RC2-CBC) and HMAC-SHA-1 MAC. These are required for interoperability with iOS `SecPKCS12Import` and other implementations that do not support PBES2.
+
+```toml
+[dependencies]
+pkcs12_builder = { version = "0.1", features = ["legacy"] }
+```
+
+This feature pulls in `sha1`, `des`, `rc2`, and `cbc` as additional dependencies.

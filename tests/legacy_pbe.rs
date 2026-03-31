@@ -1,10 +1,11 @@
 //! Tests for PKCS#12 legacy PBE decryption support (pbeWithSHAAnd3-KeyTripleDES-CBC, etc.)
 //!
-//! All tests in this file are gated behind `#[cfg(feature = "sha1")]`.
+//! All tests in this file are gated behind `#[cfg(feature = "legacy")]`.
 
-#![cfg(feature = "sha1")]
+#![cfg(feature = "legacy")]
 
 use std::process::Command;
+use std::sync::LazyLock;
 
 use der::Encode;
 use tempfile::TempDir;
@@ -12,6 +13,29 @@ use tempfile::TempDir;
 use pkcs12_builder::asn1_utils::get_key_and_cert;
 
 const PASSWORD: &str = "legacy-pbe-test";
+
+/// Cached detection of whether the system OpenSSL has the legacy provider.
+/// On OpenSSL 1.x the legacy algorithms are always built in (returns `true`).
+/// On OpenSSL 3.x we probe with `openssl list -providers -provider legacy`.
+static HAS_LEGACY_PROVIDER: LazyLock<bool> = LazyLock::new(|| {
+    let version_out = Command::new("openssl")
+        .args(["version"])
+        .output()
+        .expect("openssl version");
+    let version = String::from_utf8_lossy(&version_out.stdout);
+
+    // OpenSSL 1.x has legacy algorithms built in
+    if version.starts_with("OpenSSL 1.") || version.starts_with("LibreSSL") {
+        return true;
+    }
+
+    // OpenSSL 3.x: probe the legacy provider
+    Command::new("openssl")
+        .args(["list", "-providers", "-provider", "legacy"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -200,13 +224,13 @@ fn pbes2_cert_legacy_key() {
 // ---------------------------------------------------------------------------
 
 /// Build a PKCS#12 file using the OpenSSL legacy provider (needed for RC2-40).
-/// Returns None if the legacy provider is not available.
+/// Requires `HAS_LEGACY_PROVIDER` to be checked by the caller before invoking.
 fn openssl_export_legacy_provider(
     cert_pem_path: &str,
     key_pem_path: &str,
     keypbe: &str,
     certpbe: &str,
-) -> Option<Vec<u8>> {
+) -> Vec<u8> {
     let dir = TempDir::new().expect("temp dir");
     let p12_path = dir.path().join("out.p12");
 
@@ -235,30 +259,27 @@ fn openssl_export_legacy_provider(
         .output()
         .expect("spawn openssl pkcs12 -export");
 
-    if !out.status.success() {
-        // Legacy provider may not be available; skip gracefully
-        eprintln!(
-            "Skipping: openssl legacy provider not available for {certpbe}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return None;
-    }
+    assert!(
+        out.status.success(),
+        "openssl pkcs12 -export with legacy provider failed (keypbe={keypbe}, certpbe={certpbe}): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
-    Some(std::fs::read(&p12_path).expect("read exported p12"))
+    std::fs::read(&p12_path).expect("read exported p12")
 }
 
 /// Parse a PKCS#12 file that uses RC2-40-CBC for the cert bag and 3DES for the key bag.
 /// This was the historical OpenSSL default. Skipped if OpenSSL doesn't support legacy provider.
 #[test]
 fn legacy_rc2_40_cert_3des_key() {
+    if !*HAS_LEGACY_PROVIDER {
+        println!("Skipping: OpenSSL legacy provider not available");
+        return;
+    }
     let (key_pem, cert_pem, key_der, cert_der, _dir) = generate_credentials();
 
-    let Some(p12_bytes) =
-        openssl_export_legacy_provider(&cert_pem, &key_pem, "PBE-SHA1-3DES", "PBE-SHA1-RC2-40")
-    else {
-        eprintln!("Skipping legacy_rc2_40_cert_3des_key: OpenSSL legacy provider not available");
-        return;
-    };
+    let p12_bytes =
+        openssl_export_legacy_provider(&cert_pem, &key_pem, "PBE-SHA1-3DES", "PBE-SHA1-RC2-40");
 
     let contents = get_key_and_cert(&p12_bytes, PASSWORD)
         .expect("get_key_and_cert with RC2-40 cert / 3DES key failed");
@@ -406,6 +427,138 @@ fn pkcs12_rc2_40_cbc_round_trip() {
         .expect("decrypt");
 
     assert_eq!(decrypted, plaintext);
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Legacy PBE generation (Rust builds, Rust reads back)
+// ---------------------------------------------------------------------------
+
+/// Round-trip: generate a P12 with legacy 3DES PBE for both bags, then parse it back.
+#[test]
+fn generate_legacy_3des_round_trip() {
+    use der::Decode;
+    use pkcs12_builder::{LegacyPbeAlgorithm, MacAlgorithm, MacDataBuilder, Pkcs12Builder};
+
+    let (_key_pem, _cert_pem, key_der, cert_der, _dir) = generate_credentials();
+    let cert = x509_cert::Certificate::from_der(&cert_der).expect("parse cert");
+
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.iterations(Some(2048)).expect("set iterations");
+    p12_builder
+        .cert_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc))
+        .key_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc));
+
+    // Use SHA-1 MAC for full legacy compatibility
+    let mut mdb = MacDataBuilder::new(MacAlgorithm::HmacSha1);
+    mdb.iterations(Some(2048)).expect("set mac iterations");
+    p12_builder.mac_data_builder(Some(mdb));
+
+    let p12 = p12_builder
+        .build_with_rng(&cert, &key_der, PASSWORD, &mut rand::rng())
+        .expect("build legacy 3DES P12");
+
+    let contents = get_key_and_cert(&p12, PASSWORD).expect("parse back legacy 3DES P12");
+
+    assert_eq!(*contents.key_der, key_der);
+    assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
+}
+
+/// Round-trip: generate a P12 with legacy RC2-128 cert bag + 3DES key bag.
+#[test]
+fn generate_legacy_rc2_cert_3des_key_round_trip() {
+    use der::Decode;
+    use pkcs12_builder::{LegacyPbeAlgorithm, Pkcs12Builder};
+
+    let (_key_pem, _cert_pem, key_der, cert_der, _dir) = generate_credentials();
+    let cert = x509_cert::Certificate::from_der(&cert_der).expect("parse cert");
+
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.iterations(Some(2048)).expect("set iterations");
+    p12_builder
+        .cert_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd128BitRc2Cbc))
+        .key_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc));
+
+    let p12 = p12_builder
+        .build_with_rng(&cert, &key_der, PASSWORD, &mut rand::rng())
+        .expect("build mixed legacy P12");
+
+    let contents = get_key_and_cert(&p12, PASSWORD).expect("parse back mixed legacy P12");
+
+    assert_eq!(*contents.key_der, key_der);
+    assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
+}
+
+/// Mixed: legacy PBE cert bag + PBES2 key bag (Rust generates, Rust reads).
+#[test]
+fn generate_legacy_cert_pbes2_key_round_trip() {
+    use der::Decode;
+    use pkcs12_builder::{LegacyPbeAlgorithm, Pkcs12Builder};
+
+    let (_key_pem, _cert_pem, key_der, cert_der, _dir) = generate_credentials();
+    let cert = x509_cert::Certificate::from_der(&cert_der).expect("parse cert");
+
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.iterations(Some(2048)).expect("set iterations");
+    p12_builder.cert_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc));
+    // key uses default PBES2
+
+    let p12 = p12_builder
+        .build_with_rng(&cert, &key_der, PASSWORD, &mut rand::rng())
+        .expect("build legacy-cert/pbes2-key P12");
+
+    let contents = get_key_and_cert(&p12, PASSWORD).expect("parse back legacy-cert/pbes2-key P12");
+
+    assert_eq!(*contents.key_der, key_der);
+    assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
+}
+
+/// OpenSSL interop: Rust generates legacy PBE P12 with 3DES, OpenSSL reads it.
+#[test]
+fn generate_legacy_openssl_reads() {
+    use der::Decode;
+    use pkcs12_builder::{LegacyPbeAlgorithm, MacAlgorithm, MacDataBuilder, Pkcs12Builder};
+
+    let (_key_pem, _cert_pem, key_der, cert_der, _dir) = generate_credentials();
+    let cert = x509_cert::Certificate::from_der(&cert_der).expect("parse cert");
+
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.iterations(Some(2048)).expect("set iterations");
+    p12_builder
+        .cert_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc))
+        .key_legacy_pbe_algorithm(Some(LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc));
+
+    let mut mdb = MacDataBuilder::new(MacAlgorithm::HmacSha1);
+    mdb.iterations(Some(2048)).expect("set mac iterations");
+    p12_builder.mac_data_builder(Some(mdb));
+
+    let p12 = p12_builder
+        .build_with_rng(&cert, &key_der, PASSWORD, &mut rand::rng())
+        .expect("build legacy P12 for OpenSSL");
+
+    let dir = TempDir::new().expect("temp dir");
+    let p12_path = dir.path().join("rust_legacy.p12");
+    std::fs::write(&p12_path, &p12).expect("write p12");
+
+    let out = Command::new("openssl")
+        .args([
+            "pkcs12",
+            "-info",
+            "-in",
+            p12_path.to_str().unwrap(),
+            "-passin",
+            &format!("pass:{PASSWORD}"),
+            "-passout",
+            &format!("pass:{PASSWORD}"),
+            "-nokeys",
+        ])
+        .output()
+        .expect("openssl pkcs12 -info");
+
+    assert!(
+        out.status.success(),
+        "OpenSSL failed to read Rust-generated legacy P12: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

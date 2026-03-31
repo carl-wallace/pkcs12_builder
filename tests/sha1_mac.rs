@@ -1,8 +1,8 @@
-//! Tests for the `sha1` feature: HMAC-SHA-1 MAC verification support.
+//! Tests for the `legacy` feature: HMAC-SHA-1 MAC verification support.
 //!
-//! All tests in this file are gated behind `#[cfg(feature = "sha1")]`.
+//! All tests in this file are gated behind `#[cfg(feature = "legacy")]`.
 
-#![cfg(feature = "sha1")]
+#![cfg(feature = "legacy")]
 
 use std::process::Command;
 
@@ -158,9 +158,9 @@ fn openssl_sha1_mac_wrong_password_fails() {
     );
 }
 
-/// Verify that `MacDataBuilder` rejects `HmacSha1` for MAC generation.
+/// Verify that `MacDataBuilder` accepts `HmacSha1` for MAC generation (needed for legacy P12 interop).
 #[test]
-fn mac_data_builder_rejects_sha1() {
+fn mac_data_builder_accepts_sha1() {
     let key = include_bytes!("examples/key.der");
     let cert_bytes = include_bytes!("examples/cert.der");
     let cert = Certificate::from_der(cert_bytes).unwrap();
@@ -173,7 +173,15 @@ fn mac_data_builder_rejects_sha1() {
     builder.mac_data_builder(Some(md));
 
     let result = builder.build_with_rng(&cert, key, "password", &mut rand::rng());
-    assert!(result.is_err(), "building with HmacSha1 should fail");
+    assert!(result.is_ok(), "building with HmacSha1 should succeed");
+
+    // Verify the generated P12 can be parsed back with MAC verification
+    let p12_bytes = result.unwrap();
+    let contents = pkcs12_builder::get_key_and_cert(&p12_bytes, "password");
+    assert!(
+        contents.is_ok(),
+        "should be able to parse back P12 with SHA-1 MAC"
+    );
 }
 
 /// Verify OID round-trip for `MacAlgorithm::HmacSha1`.
