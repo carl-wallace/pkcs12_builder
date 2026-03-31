@@ -412,7 +412,7 @@ fn rust_chain_openssl_reads() {
         .key_kdf_algorithm(Some(Pbkdf2Prf::HmacWithSha256))
         .key_enc_algorithm(Some(EncryptionAlgorithm::Aes256Cbc))
         .mac_data_builder(Some(mac_builder))
-        .additional_cert(ca_cert);
+        .additional_cert(ca_cert.clone());
 
     let mut rng = rand::rng();
     let p12 = builder
@@ -422,6 +422,18 @@ fn rust_chain_openssl_reads() {
     assert!(
         openssl_verify(&p12, PASSWORD),
         "OpenSSL failed to read PFX with certificate chain"
+    );
+
+    // Verify the Rust parser recovers the additional certificate
+    let contents = get_key_and_cert(&p12, PASSWORD).expect("get_key_and_cert with chain");
+    assert_eq!(
+        contents.additional_certificates.len(),
+        1,
+        "expected one additional certificate"
+    );
+    assert_eq!(
+        contents.additional_certificates[0], ca_cert,
+        "additional certificate should match the CA cert"
     );
 }
 

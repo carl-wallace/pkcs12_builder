@@ -1,8 +1,10 @@
 //! Structure to help with generating [MacData] objects
 
-use hmac::{Hmac, KeyInit, Mac};
+#[cfg(feature = "legacy")]
+use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 use spki::AlgorithmIdentifier;
+use zeroize::Zeroizing;
 
 use der::{Any, AnyRef, Decode, asn1::OctetString};
 use log::{error, warn};
@@ -88,65 +90,46 @@ impl MacDataBuilder {
         600000
     }
 
-    /// Generate MAC key given a password and a salt
-    fn generate_mac_key(&self, password: &str, salt: &[u8]) -> Result<Vec<u8>> {
+    /// Generate MAC key given a password and a salt. The returned key is zeroized on drop.
+    fn generate_mac_key(&self, password: &str, salt: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         let iterations = self.get_iterations();
 
         match self.digest_algorithm {
-            MacAlgorithm::HmacSha256 => Ok(derive_key_utf8::<Sha256>(
+            MacAlgorithm::HmacSha256 => Ok(Zeroizing::new(derive_key_utf8::<Sha256>(
                 password,
                 salt,
                 Pkcs12KeyType::Mac,
                 iterations,
                 self.digest_algorithm.output_size(),
-            )?),
-            MacAlgorithm::HmacSha384 => Ok(derive_key_utf8::<Sha384>(
+            )?)),
+            MacAlgorithm::HmacSha384 => Ok(Zeroizing::new(derive_key_utf8::<Sha384>(
                 password,
                 salt,
                 Pkcs12KeyType::Mac,
                 iterations,
                 self.digest_algorithm.output_size(),
-            )?),
-            MacAlgorithm::HmacSha512 => Ok(derive_key_utf8::<Sha512>(
+            )?)),
+            MacAlgorithm::HmacSha512 => Ok(Zeroizing::new(derive_key_utf8::<Sha512>(
                 password,
                 salt,
                 Pkcs12KeyType::Mac,
                 iterations,
                 self.digest_algorithm.output_size(),
-            )?),
-            #[cfg(feature = "sha1")]
-            MacAlgorithm::HmacSha1 => Err(Error::Pkcs12Builder(String::from(
-                "HMAC-SHA1 is not supported for MAC generation",
-            ))),
+            )?)),
+            #[cfg(feature = "legacy")]
+            MacAlgorithm::HmacSha1 => Ok(Zeroizing::new(derive_key_utf8::<Sha1>(
+                password,
+                salt,
+                Pkcs12KeyType::Mac,
+                iterations,
+                self.digest_algorithm.output_size(),
+            )?)),
         }
     }
 
     /// Generate a MAC given a MAC key and content
     fn generate_mac(&self, mac_key: &[u8], content: &[u8]) -> Result<Vec<u8>> {
-        match self.digest_algorithm {
-            MacAlgorithm::HmacSha256 => {
-                type HmacSha256 = Hmac<Sha256>;
-                let mut mac = HmacSha256::new_from_slice(mac_key)?;
-                mac.update(content);
-                Ok(mac.finalize().into_bytes().to_vec())
-            }
-            MacAlgorithm::HmacSha384 => {
-                type HmacSha384 = Hmac<Sha384>;
-                let mut mac = HmacSha384::new_from_slice(mac_key)?;
-                mac.update(content);
-                Ok(mac.finalize().into_bytes().to_vec())
-            }
-            MacAlgorithm::HmacSha512 => {
-                type HmacSha512 = Hmac<Sha512>;
-                let mut mac = HmacSha512::new_from_slice(mac_key)?;
-                mac.update(content);
-                Ok(mac.finalize().into_bytes().to_vec())
-            }
-            #[cfg(feature = "sha1")]
-            MacAlgorithm::HmacSha1 => Err(Error::Pkcs12Builder(String::from(
-                "HMAC-SHA1 is not supported for MAC generation",
-            ))),
-        }
+        Ok(self.digest_algorithm.compute_hmac(mac_key, content)?)
     }
 
     /// Builds a MacData instance using a previously specified salt value and a previously specified

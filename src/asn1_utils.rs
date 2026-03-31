@@ -2,13 +2,11 @@
 
 use log::{error, warn};
 
-use hmac::{Hmac, KeyInit, Mac};
-#[cfg(feature = "sha1")]
+#[cfg(feature = "legacy")]
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 
 use cms::encrypted_data::EncryptedData;
-#[cfg(feature = "sha1")]
 use const_oid::ObjectIdentifier;
 use const_oid::db::rfc2985::PKCS_9_AT_LOCAL_KEY_ID;
 use const_oid::db::rfc5911::{ID_DATA, ID_ENCRYPTED_DATA};
@@ -42,7 +40,12 @@ pub struct CertContents {
     pub additional_cert_ders: Vec<Vec<u8>>,
     /// Optional `localKeyID` attribute value.
     pub key_id: Option<Vec<u8>>,
+    /// Optional `friendlyName` attribute value.
+    pub friendly_name: Option<String>,
 }
+
+/// Return type for [`get_key`]: the decrypted key bytes (zeroized on drop) and an optional `localKeyID`.
+pub type KeyContents = (Zeroizing<Vec<u8>>, Option<Vec<u8>>);
 
 /// Fully decoded contents of a PKCS #12 object.
 pub struct Pkcs12Contents {
@@ -52,12 +55,26 @@ pub struct Pkcs12Contents {
     pub certificate: Certificate,
     /// Optional `localKeyID` attribute value.
     pub key_id: Option<Vec<u8>>,
+    /// Optional `friendlyName` attribute value.
+    pub friendly_name: Option<String>,
     /// Parsed additional certificates (CA / intermediate chain).
     pub additional_certificates: Vec<Certificate>,
 }
 
+/// Returns `true` if the OID identifies a known PKCS#12 legacy PBE algorithm.
+/// Used without the `legacy` feature to produce a clear error message.
+#[cfg(not(feature = "legacy"))]
+fn is_known_legacy_pbe_oid(oid: &ObjectIdentifier) -> bool {
+    matches!(
+        *oid,
+        pkcs12::PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC
+            | pkcs12::PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC
+            | pkcs12::PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC
+    )
+}
+
 /// Returns `true` if the OID identifies a PKCS#12 legacy PBE algorithm.
-#[cfg(feature = "sha1")]
+#[cfg(feature = "legacy")]
 fn is_pkcs12_pbe_oid(oid: &ObjectIdentifier) -> bool {
     matches!(
         *oid,
@@ -68,7 +85,7 @@ fn is_pkcs12_pbe_oid(oid: &ObjectIdentifier) -> bool {
 }
 
 /// Decrypt data encrypted with a PKCS#12 legacy PBE scheme (SHA-1 based KDF with 3DES-CBC or RC2-CBC).
-#[cfg(feature = "sha1")]
+#[cfg(feature = "legacy")]
 fn pkcs12_pbe_decrypt<'a>(
     alg_oid: &ObjectIdentifier,
     params_der: &[u8],
@@ -101,14 +118,20 @@ fn pkcs12_pbe_decrypt<'a>(
         }
     };
 
-    let key = derive_key_utf8::<Sha1>(
+    let key = Zeroizing::new(derive_key_utf8::<Sha1>(
         password,
         salt,
         Pkcs12KeyType::EncryptionKey,
         iterations,
         key_len,
-    )?;
-    let iv = derive_key_utf8::<Sha1>(password, salt, Pkcs12KeyType::Iv, iterations, iv_len)?;
+    )?);
+    let iv = Zeroizing::new(derive_key_utf8::<Sha1>(
+        password,
+        salt,
+        Pkcs12KeyType::Iv,
+        iterations,
+        iv_len,
+    )?);
 
     match *alg_oid {
         pkcs12::PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC => {
@@ -148,25 +171,31 @@ fn pkcs12_pbe_decrypt<'a>(
 /// entries are returned as additional certificates.
 fn extract_certs_from_safe_contents(plaintext: &[u8]) -> Result<CertContents> {
     let safe_bags = SafeContents::from_der(plaintext)?;
-    let mut main_cert: Option<(Vec<u8>, Option<Vec<u8>>)> = None;
+    let mut main_cert: Option<CertContents> = None;
     let mut additional_certs: Vec<Vec<u8>> = Vec::new();
 
     for safe_bag in safe_bags {
         match safe_bag.bag_id {
             pkcs12::PKCS_12_CERT_BAG_OID => {
+                let friendly_name = get_friendly_name(&safe_bag.bag_attributes);
                 let key_id = get_key_id(safe_bag.bag_attributes);
                 let cs: ContextSpecific<CertBag> = ContextSpecific::from_der(&safe_bag.bag_value)?;
                 let cert_der = cs.value.cert_value.as_bytes().to_vec();
 
                 if main_cert
                     .as_ref()
-                    .is_none_or(|mc| mc.1.is_none() && key_id.is_some())
+                    .is_none_or(|mc| mc.key_id.is_none() && key_id.is_some())
                 {
                     // Promote this to main cert; demote any previous main to additional
-                    if let Some((prev_der, _)) = main_cert.take() {
-                        additional_certs.push(prev_der);
+                    if let Some(prev) = main_cert.take() {
+                        additional_certs.push(prev.cert_der);
                     }
-                    main_cert = Some((cert_der, key_id));
+                    main_cert = Some(CertContents {
+                        cert_der,
+                        additional_cert_ders: Vec::new(),
+                        key_id,
+                        friendly_name,
+                    });
                 } else {
                     additional_certs.push(cert_der);
                 }
@@ -178,11 +207,10 @@ fn extract_certs_from_safe_contents(plaintext: &[u8]) -> Result<CertContents> {
     }
 
     match main_cert {
-        Some((cert_der, key_id)) => Ok(CertContents {
-            cert_der,
-            additional_cert_ders: additional_certs,
-            key_id,
-        }),
+        Some(mut cc) => {
+            cc.additional_cert_ders = additional_certs;
+            Ok(cc)
+        }
         None => {
             error!("Failed to find certificate bag");
             Err(Error::NotFound)
@@ -239,17 +267,17 @@ pub fn get_safe_bags(content: &Any) -> Result<SafeContents> {
 /// Takes an [Any] that notionally contains an [OctetString] wrapping a [SafeContents] object.
 /// Iterates over the [SafeBag](pkcs12::safe_bag::SafeBag) list and decrypts the first bag of type
 /// [PKCS_12_PKCS8_KEY_BAG_OID](pkcs12::PKCS_12_PKCS8_KEY_BAG_OID) using the provided password,
-/// returning a tuple containing the plaintext key bytes and an optional key identifier. Returns an
-/// error if no key bag is found or decryption fails.
-pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+/// returning a tuple containing the plaintext key bytes (zeroized on drop) and an optional key
+/// identifier. Returns an error if no key bag is found or decryption fails.
+pub fn get_key(content: &Any, password: &str) -> Result<KeyContents> {
     let safe_bags = get_safe_bags(content)?;
     for safe_bag in safe_bags {
         match safe_bag.bag_id {
             pkcs12::PKCS_12_PKCS8_KEY_BAG_OID => {
                 let key_id = get_key_id(safe_bag.bag_attributes);
 
-                // Try PKCS#12 legacy PBE first (requires sha1 feature)
-                #[cfg(feature = "sha1")]
+                // Try PKCS#12 legacy PBE first (requires legacy feature)
+                #[cfg(feature = "legacy")]
                 {
                     let cs_generic: ContextSpecific<pkcs12::pbe_params::EncryptedPrivateKeyInfo> =
                         ContextSpecific::from_der(&safe_bag.bag_value)?;
@@ -269,9 +297,25 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
                             &cs_generic.value.encryption_algorithm.oid,
                             &params_der,
                             password,
-                            &mut *ciphertext,
+                            &mut ciphertext,
                         )?;
-                        return Ok((plaintext.to_vec(), key_id));
+                        return Ok((Zeroizing::new(plaintext.to_vec()), key_id));
+                    }
+                }
+
+                #[cfg(not(feature = "legacy"))]
+                {
+                    let cs_generic: ContextSpecific<
+                        pkcs12::pbe_params::EncryptedPrivateKeyInfo,
+                    > = ContextSpecific::from_der(&safe_bag.bag_value)?;
+                    if is_known_legacy_pbe_oid(
+                        &cs_generic.value.encryption_algorithm.oid,
+                    ) {
+                        return Err(Error::Pkcs12Builder(
+                            "This P12 uses legacy PBE encryption. \
+                             Enable the `legacy` feature to parse it."
+                                .to_string(),
+                        ));
                     }
                 }
 
@@ -295,7 +339,7 @@ pub fn get_key(content: &Any, password: &str) -> Result<(Vec<u8>, Option<Vec<u8>
                     .value
                     .encryption_algorithm
                     .decrypt_in_place(password, &mut ciphertext)?;
-                return Ok((plaintext.to_vec(), key_id));
+                return Ok((Zeroizing::new(plaintext.to_vec()), key_id));
             }
             _ => {
                 warn!("Unexpected SafeBag type. Ignoring and continuing...");
@@ -321,8 +365,8 @@ pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
     };
     let mut ciphertext = Zeroizing::new(ciphertext_os.as_bytes().to_vec());
 
-    // Try PKCS#12 legacy PBE first (requires sha1 feature)
-    #[cfg(feature = "sha1")]
+    // Try PKCS#12 legacy PBE first (requires legacy feature)
+    #[cfg(feature = "legacy")]
     if is_pkcs12_pbe_oid(&enc_data.enc_content_info.content_enc_alg.oid) {
         let params_der = enc_data
             .enc_content_info
@@ -335,9 +379,18 @@ pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
             &enc_data.enc_content_info.content_enc_alg.oid,
             &params_der,
             password,
-            &mut *ciphertext,
+            &mut ciphertext,
         )?;
         return extract_certs_from_safe_contents(plaintext);
+    }
+
+    #[cfg(not(feature = "legacy"))]
+    if is_known_legacy_pbe_oid(&enc_data.enc_content_info.content_enc_alg.oid) {
+        return Err(Error::Pkcs12Builder(
+            "This P12 uses legacy PBE encryption. \
+             Enable the `legacy` feature to parse it."
+                .to_string(),
+        ));
     }
 
     // PBES2 path
@@ -379,6 +432,28 @@ fn get_key_id(attributes: Option<Attributes>) -> Option<Vec<u8>> {
                     return Some(value.value().to_vec());
                 }
                 warn!("Found a key ID attribute but it had no value. Ignoring and continuing...");
+            }
+        }
+    }
+    None
+}
+
+/// Takes an optional set of Attributes and returns the `friendlyName` value if present.
+fn get_friendly_name(attributes: &Option<Attributes>) -> Option<String> {
+    use const_oid::db::rfc2985::PKCS_9_AT_FRIENDLY_NAME;
+    use der::asn1::BmpString;
+
+    if let Some(attributes) = attributes {
+        for attribute in attributes.iter() {
+            if attribute.oid == PKCS_9_AT_FRIENDLY_NAME {
+                if let Some(value) = attribute.values.iter().next() {
+                    if let Ok(bmp) = BmpString::from_der(&value.to_der().unwrap_or_default()) {
+                        return Some(bmp.to_string());
+                    }
+                    warn!("Found a friendlyName attribute but could not decode the BMP string. Ignoring and continuing...");
+                } else {
+                    warn!("Found a friendlyName attribute but it had no value. Ignoring and continuing...");
+                }
             }
         }
     }
@@ -450,9 +525,10 @@ pub fn get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents
             additional_certificates.push(Certificate::from_der(der)?);
         }
         return Ok(Pkcs12Contents {
-            key_der: Zeroizing::new(recovered_key),
+            key_der: recovered_key,
             certificate: Certificate::from_der(&cert_contents.cert_der)?,
             key_id,
+            friendly_name: cert_contents.friendly_name,
             additional_certificates,
         });
     }
@@ -461,6 +537,12 @@ pub fn get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents
 
 /// Check MAC given a password, an optional MacData and the content to authenticate.
 fn check_mac(password: &str, mac_data: &MacData, content: &[u8]) -> Result<()> {
+    if mac_data.iterations < 1 {
+        return Err(Error::Pkcs12Builder(format!(
+            "Invalid MAC iteration count: {}",
+            mac_data.iterations
+        )));
+    }
     if mac_data.iterations as u32 > MAX_ITERATION_COUNT {
         return Err(Error::Pkcs12Builder(format!(
             "The iterations limit exceeded. {} is greater than {}",
@@ -470,8 +552,8 @@ fn check_mac(password: &str, mac_data: &MacData, content: &[u8]) -> Result<()> {
 
     let md = MacAlgorithm::try_from(mac_data.mac.algorithm.oid)?;
 
-    let mac_key = match md {
-        #[cfg(feature = "sha1")]
+    let mac_key = Zeroizing::new(match md {
+        #[cfg(feature = "legacy")]
         MacAlgorithm::HmacSha1 => derive_key_utf8::<Sha1>(
             password,
             mac_data.mac_salt.as_bytes(),
@@ -500,7 +582,7 @@ fn check_mac(password: &str, mac_data: &MacData, content: &[u8]) -> Result<()> {
             mac_data.iterations,
             md.output_size(),
         )?,
-    };
+    });
     let mac = generate_mac(md, &mac_key, content)?;
 
     match mac.ct_eq(mac_data.mac.digest.as_bytes()).unwrap_u8() {
@@ -513,31 +595,5 @@ fn check_mac(password: &str, mac_data: &MacData, content: &[u8]) -> Result<()> {
 
 /// Generate a MAC given a MAC key and content
 fn generate_mac(md: MacAlgorithm, mac_key: &[u8], content: &[u8]) -> Result<Vec<u8>> {
-    match md {
-        #[cfg(feature = "sha1")]
-        MacAlgorithm::HmacSha1 => {
-            type HmacSha1 = Hmac<Sha1>;
-            let mut mac = HmacSha1::new_from_slice(mac_key)?;
-            mac.update(content);
-            Ok(mac.finalize().into_bytes().to_vec())
-        }
-        MacAlgorithm::HmacSha256 => {
-            type HmacSha256 = Hmac<Sha256>;
-            let mut mac = HmacSha256::new_from_slice(mac_key)?;
-            mac.update(content);
-            Ok(mac.finalize().into_bytes().to_vec())
-        }
-        MacAlgorithm::HmacSha384 => {
-            type HmacSha384 = Hmac<Sha384>;
-            let mut mac = HmacSha384::new_from_slice(mac_key)?;
-            mac.update(content);
-            Ok(mac.finalize().into_bytes().to_vec())
-        }
-        MacAlgorithm::HmacSha512 => {
-            type HmacSha512 = Hmac<Sha512>;
-            let mut mac = HmacSha512::new_from_slice(mac_key)?;
-            mac.update(content);
-            Ok(mac.finalize().into_bytes().to_vec())
-        }
-    }
+    Ok(md.compute_hmac(mac_key, content)?)
 }

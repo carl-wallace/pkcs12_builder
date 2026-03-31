@@ -43,7 +43,7 @@ fn check_key_and_cert(
         } else if ID_DATA == auth_safe.content_type {
             // key
             let recovered_key = get_key(&auth_safe.content, password).unwrap();
-            assert_eq!(recovered_key.0, key);
+            assert_eq!(*recovered_key.0, key);
             assert_eq!(&recovered_key.1, key_id);
         }
     }
@@ -520,7 +520,7 @@ fn different_iterations_test() {
 fn different_key_and_cert_ids_test() {
     let mut p12_builder = Pkcs12Builder::new();
     let cert_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
-    let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
+    let key_id = hex_literal::hex!("AA BB CC DD 00 11 22 33 44 55 66 77 88 99 AA BB CC DD EE FF");
 
     let mut cert_attrs = SetOfVec::new();
     add_key_id_attr(&mut cert_attrs, &cert_id).unwrap();
@@ -536,10 +536,6 @@ fn different_key_and_cert_ids_test() {
     p12_builder.cert_attributes(Some(cert_attrs));
     p12_builder.iterations(Some(2048)).unwrap();
 
-    let rng = &mut rand::rng();
-    let mut salt = vec![0_u8; 16];
-    rng.fill_bytes(salt.as_mut_slice());
-
     let der_pfx = p12_builder
         .build_with_rng(&cert, key, "", &mut rand::rng())
         .unwrap();
@@ -548,7 +544,7 @@ fn different_key_and_cert_ids_test() {
         "",
         key,
         cert_bytes,
-        &Some(key_id.to_vec()),
+        &Some(cert_id.to_vec()),
         &Some(key_id.to_vec()),
     );
     check_algs(
@@ -598,5 +594,175 @@ fn cert_id_only_test() {
         &der_pfx,
         2048,
         2048,
+    );
+}
+
+/// Verify that parsing a P12 with legacy PBE encryption produces a clear error
+/// when the `legacy` feature is not enabled. Tests the `get_cert` path directly
+/// to bypass the MAC check (the test P12 uses SHA-1 MAC which is also gated).
+#[cfg(not(feature = "legacy"))]
+#[test]
+fn legacy_pbe_cert_rejected_without_feature() {
+    use pkcs12_builder::get_cert;
+
+    // Build a valid PBES2 P12, then replace the cert EncryptedData's algorithm OID
+    // with a legacy PBE OID to simulate a legacy-encrypted cert bag.
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.omit_mac(); // skip MAC so we can tamper freely
+    p12_builder.iterations(Some(2048)).unwrap();
+
+    let key = include_bytes!("../tests/examples/key.der");
+    let cert_bytes = include_bytes!("../tests/examples/cert.der");
+    let cert = Certificate::from_der(cert_bytes).unwrap();
+
+    let der_pfx = p12_builder
+        .build_with_rng(&cert, key, "test", &mut rand::rng())
+        .unwrap();
+
+    let pfx = Pfx::from_der(&der_pfx).unwrap();
+    let auth_safes = get_auth_safes(&pfx.auth_safe.content).unwrap();
+    for auth_safe in &auth_safes {
+        if ID_ENCRYPTED_DATA == auth_safe.content_type {
+            let enc_data =
+                EncryptedData::from_der(&auth_safe.content.to_der().unwrap()).unwrap();
+
+            // Replace the PBES2 OID with pbeWithSHAAnd3-KeyTripleDES-CBC
+            let legacy_oid = const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.12.1.3");
+            let tampered_enc_data = EncryptedData {
+                version: enc_data.version,
+                enc_content_info: cms::enveloped_data::EncryptedContentInfo {
+                    content_type: enc_data.enc_content_info.content_type,
+                    content_enc_alg: AlgorithmIdentifier {
+                        oid: legacy_oid,
+                        parameters: enc_data.enc_content_info.content_enc_alg.parameters,
+                    },
+                    encrypted_content: enc_data.enc_content_info.encrypted_content,
+                },
+                unprotected_attrs: None,
+            };
+            let der_tampered = tampered_enc_data.to_der().unwrap();
+            let any_tampered = Any::from_der(&der_tampered).unwrap();
+
+            let err = match get_cert(&any_tampered, "test") {
+                Err(e) => e,
+                Ok(_) => panic!("Expected error for legacy PBE cert without feature"),
+            };
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("legacy") && msg.contains("feature"),
+                "Expected error mentioning legacy feature, got: {msg}"
+            );
+            return;
+        }
+    }
+    panic!("Did not find ID_ENCRYPTED_DATA in auth_safes");
+}
+
+/// Verify that parsing a P12 with legacy PBE key encryption produces a clear error
+/// when the `legacy` feature is not enabled. Tests the `get_key` path directly.
+#[cfg(not(feature = "legacy"))]
+#[test]
+fn legacy_pbe_key_rejected_without_feature() {
+    use pkcs12_builder::get_key;
+
+    // Build a valid PBES2 P12, extract the key auth_safe content, then tamper the
+    // key encryption OID to a legacy PBE OID.
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.omit_mac();
+    p12_builder.iterations(Some(2048)).unwrap();
+
+    let key = include_bytes!("../tests/examples/key.der");
+    let cert_bytes = include_bytes!("../tests/examples/cert.der");
+    let cert = Certificate::from_der(cert_bytes).unwrap();
+
+    let der_pfx = p12_builder
+        .build_with_rng(&cert, key, "test", &mut rand::rng())
+        .unwrap();
+
+    let pfx = Pfx::from_der(&der_pfx).unwrap();
+    let auth_safes = get_auth_safes(&pfx.auth_safe.content).unwrap();
+    for auth_safe in &auth_safes {
+        if ID_DATA == auth_safe.content_type {
+            // get_key parses the content which contains SafeBags with encrypted keys.
+            // The key encryption OID is inside the PKCS8 EncryptedPrivateKeyInfo.
+            // We need to tamper the DER inside the OctetString to replace the PBES2 OID.
+            //
+            // Rather than byte-patching deep DER, we test that get_key on an unmodified
+            // PBES2 key succeeds, then verify the is_known_legacy_pbe_oid check is
+            // compiled in by calling it on a synthetic SafeBag with a legacy OID.
+            //
+            // For a true integration test, build the SafeBag with a legacy OID manually:
+            let safe_bags = get_safe_bags(&auth_safe.content).unwrap();
+            for safe_bag in safe_bags {
+                if safe_bag.bag_id == PKCS_12_PKCS8_KEY_BAG_OID {
+                    // Parse the encrypted key and replace the algorithm OID
+                    let cs: ContextSpecific<pkcs12::pbe_params::EncryptedPrivateKeyInfo> =
+                        ContextSpecific::from_der(&safe_bag.bag_value).unwrap();
+                    let legacy_oid =
+                        const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.12.1.3");
+                    let tampered_epki = pkcs12::pbe_params::EncryptedPrivateKeyInfo {
+                        encryption_algorithm: AlgorithmIdentifierOwned {
+                            oid: legacy_oid,
+                            parameters: cs.value.encryption_algorithm.parameters,
+                        },
+                        encrypted_data: cs.value.encrypted_data,
+                    };
+                    // Re-encode as a SafeBag
+                    let tampered_bag_value = tampered_epki.to_der().unwrap();
+                    let tampered_safe_bag = pkcs12::safe_bag::SafeBag {
+                        bag_id: PKCS_12_PKCS8_KEY_BAG_OID,
+                        bag_value: tampered_bag_value,
+                        bag_attributes: safe_bag.bag_attributes,
+                    };
+                    let tampered_bags = vec![tampered_safe_bag];
+                    let tampered_bags_der = tampered_bags.to_der().unwrap();
+                    let tampered_os = OctetString::new(tampered_bags_der).unwrap().to_der().unwrap();
+                    let tampered_any = Any::from_der(&tampered_os).unwrap();
+
+                    let err = match get_key(&tampered_any, "test") {
+                        Err(e) => e,
+                        Ok(_) => panic!("Expected error for legacy PBE key without feature"),
+                    };
+                    let msg = format!("{err}");
+                    assert!(
+                        msg.contains("legacy") && msg.contains("feature"),
+                        "Expected error mentioning legacy feature, got: {msg}"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    panic!("Did not find key SafeBag in auth_safes");
+}
+
+/// Verify that a P12 with an excessively high MAC iteration count is rejected during parsing.
+#[test]
+fn excessive_mac_iterations_rejected() {
+    let mut p12_builder = Pkcs12Builder::new();
+    p12_builder.iterations(Some(2048)).unwrap();
+
+    let key = include_bytes!("../tests/examples/key.der");
+    let cert_bytes = include_bytes!("../tests/examples/cert.der");
+    let cert = Certificate::from_der(cert_bytes).unwrap();
+
+    let der_pfx = p12_builder
+        .build_with_rng(&cert, key, "test", &mut rand::rng())
+        .unwrap();
+
+    // Parse the valid P12 and re-encode with an excessive MAC iteration count.
+    let mut pfx = Pfx::from_der(&der_pfx).unwrap();
+    let mac_data = pfx.mac_data.as_mut().unwrap();
+    mac_data.iterations = 100_000_001;
+    let tampered = pfx.to_der().unwrap();
+
+    let err = match get_key_and_cert(&tampered, "test") {
+        Err(e) => e,
+        Ok(_) => panic!("Expected error for excessive iterations"),
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("iterations"),
+        "Expected error about iterations limit, got: {msg}"
     );
 }
