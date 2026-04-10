@@ -305,12 +305,9 @@ pub fn get_key(content: &Any, password: &str) -> Result<KeyContents> {
 
                 #[cfg(not(feature = "legacy"))]
                 {
-                    let cs_generic: ContextSpecific<
-                        pkcs12::pbe_params::EncryptedPrivateKeyInfo,
-                    > = ContextSpecific::from_der(&safe_bag.bag_value)?;
-                    if is_known_legacy_pbe_oid(
-                        &cs_generic.value.encryption_algorithm.oid,
-                    ) {
+                    let cs_generic: ContextSpecific<pkcs12::pbe_params::EncryptedPrivateKeyInfo> =
+                        ContextSpecific::from_der(&safe_bag.bag_value)?;
+                    if is_known_legacy_pbe_oid(&cs_generic.value.encryption_algorithm.oid) {
                         return Err(Error::Pkcs12Builder(
                             "This P12 uses legacy PBE encryption. \
                              Enable the `legacy` feature to parse it."
@@ -450,9 +447,13 @@ fn get_friendly_name(attributes: &Option<Attributes>) -> Option<String> {
                     if let Ok(bmp) = BmpString::from_der(&value.to_der().unwrap_or_default()) {
                         return Some(bmp.to_string());
                     }
-                    warn!("Found a friendlyName attribute but could not decode the BMP string. Ignoring and continuing...");
+                    warn!(
+                        "Found a friendlyName attribute but could not decode the BMP string. Ignoring and continuing..."
+                    );
                 } else {
-                    warn!("Found a friendlyName attribute but it had no value. Ignoring and continuing...");
+                    warn!(
+                        "Found a friendlyName attribute but it had no value. Ignoring and continuing..."
+                    );
                 }
             }
         }

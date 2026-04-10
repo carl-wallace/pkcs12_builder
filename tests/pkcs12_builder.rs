@@ -623,8 +623,7 @@ fn legacy_pbe_cert_rejected_without_feature() {
     let auth_safes = get_auth_safes(&pfx.auth_safe.content).unwrap();
     for auth_safe in &auth_safes {
         if ID_ENCRYPTED_DATA == auth_safe.content_type {
-            let enc_data =
-                EncryptedData::from_der(&auth_safe.content.to_der().unwrap()).unwrap();
+            let enc_data = EncryptedData::from_der(&auth_safe.content.to_der().unwrap()).unwrap();
 
             // Replace the PBES2 OID with pbeWithSHAAnd3-KeyTripleDES-CBC
             let legacy_oid = const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.1.12.1.3");
@@ -716,7 +715,10 @@ fn legacy_pbe_key_rejected_without_feature() {
                     };
                     let tampered_bags = vec![tampered_safe_bag];
                     let tampered_bags_der = tampered_bags.to_der().unwrap();
-                    let tampered_os = OctetString::new(tampered_bags_der).unwrap().to_der().unwrap();
+                    let tampered_os = OctetString::new(tampered_bags_der)
+                        .unwrap()
+                        .to_der()
+                        .unwrap();
                     let tampered_any = Any::from_der(&tampered_os).unwrap();
 
                     let err = match get_key(&tampered_any, "test") {

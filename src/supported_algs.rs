@@ -1,13 +1,13 @@
 //! Supported MAC and encryption algorithms
 
 use crate::Error;
-use hmac::{Hmac, KeyInit, Mac};
 #[cfg(feature = "legacy")]
 use const_oid::db::rfc5912::ID_SHA_1;
 use const_oid::{
     ObjectIdentifier,
     db::rfc5912::{ID_SHA_256, ID_SHA_384, ID_SHA_512},
 };
+use hmac::{Hmac, KeyInit, Mac};
 #[cfg(feature = "legacy")]
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
@@ -75,7 +75,11 @@ impl MacAlgorithm {
     }
 
     /// Compute an HMAC over `content` using the given `key`.
-    pub fn compute_hmac(&self, key: &[u8], content: &[u8]) -> Result<Vec<u8>, hmac::digest::InvalidLength> {
+    pub fn compute_hmac(
+        &self,
+        key: &[u8],
+        content: &[u8],
+    ) -> Result<Vec<u8>, hmac::digest::InvalidLength> {
         match self {
             #[cfg(feature = "legacy")]
             MacAlgorithm::HmacSha1 => {
