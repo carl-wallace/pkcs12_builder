@@ -22,8 +22,7 @@ use pkcs12::{
     safe_bag::SafeContents,
 };
 use subtle::ConstantTimeEq;
-use x509_cert::Certificate;
-use x509_cert::attr::Attributes;
+use x509_cert::attr::{Attribute, Attributes};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -35,30 +34,41 @@ use crate::{
 /// DER-encoded certificates extracted from a PKCS #12 safe contents.
 pub struct CertContents {
     /// DER-encoded main (end-entity) certificate.
-    pub cert_der: Vec<u8>,
+    pub cert: CertAndAttributes,
     /// DER-encoded additional certificates (CA / intermediate chain).
-    pub additional_cert_ders: Vec<Vec<u8>>,
-    /// Optional `localKeyID` attribute value.
-    pub key_id: Option<Vec<u8>>,
-    /// Optional `friendlyName` attribute value.
-    pub friendly_name: Option<String>,
+    pub additional_certs: Vec<CertAndAttributes>,
 }
 
-/// Return type for [`get_key`]: the decrypted key bytes (zeroized on drop) and an optional `localKeyID`.
-pub type KeyContents = (Zeroizing<Vec<u8>>, Option<Vec<u8>>);
+/// A DER-encoded certificate together with its PKCS #12 bag attributes.
+#[derive(Debug, PartialEq)]
+pub struct CertAndAttributes {
+    /// DER-encoded certificate.
+    pub der: Vec<u8>,
+    /// Optional `localKeyID` attribute value.
+    pub local_key_id: Option<Vec<u8>>,
+    /// Optional `friendlyName` attribute value.
+    pub friendly_name: Option<String>,
+    /// Any additional bag attributes beyond `localKeyID` and `friendlyName`.
+    pub other_attributes: Option<Vec<Attribute>>,
+}
+
+/// Return type for [`get_key`]: the decrypted key bytes (zeroized on drop) and parsed bag attributes.
+pub type KeyContents = (Zeroizing<Vec<u8>>, ParsedAttributes);
 
 /// Fully decoded contents of a PKCS #12 object.
 pub struct Pkcs12Contents {
     /// DER-encoded private key (zeroized on drop).
     pub key_der: Zeroizing<Vec<u8>>,
-    /// Parsed end-entity certificate.
-    pub certificate: Certificate,
-    /// Optional `localKeyID` attribute value.
+    /// Optional `localKeyID` attribute from the key bag.
     pub key_id: Option<Vec<u8>>,
-    /// Optional `friendlyName` attribute value.
+    /// Optional `friendlyName` attribute from the key bag.
     pub friendly_name: Option<String>,
-    /// Parsed additional certificates (CA / intermediate chain).
-    pub additional_certificates: Vec<Certificate>,
+    /// Any additional key bag attributes beyond `localKeyID` and `friendlyName`.
+    pub other_key_attributes: Option<Vec<Attribute>>,
+    /// End-entity certificate and attributes.
+    pub certificate: CertAndAttributes,
+    /// Additional certificates and attributes (CA / intermediate chain).
+    pub additional_certificates: Vec<CertAndAttributes>,
 }
 
 /// Returns `true` if the OID identifies a known PKCS#12 legacy PBE algorithm.
@@ -172,32 +182,39 @@ fn pkcs12_pbe_decrypt<'a>(
 fn extract_certs_from_safe_contents(plaintext: &[u8]) -> Result<CertContents> {
     let safe_bags = SafeContents::from_der(plaintext)?;
     let mut main_cert: Option<CertContents> = None;
-    let mut additional_certs: Vec<Vec<u8>> = Vec::new();
+    let mut additional_certs: Vec<CertAndAttributes> = Vec::new();
 
     for safe_bag in safe_bags {
         match safe_bag.bag_id {
             pkcs12::PKCS_12_CERT_BAG_OID => {
-                let friendly_name = get_friendly_name(&safe_bag.bag_attributes);
-                let key_id = get_key_id(safe_bag.bag_attributes);
+                let attrs = parse_attributes(safe_bag.bag_attributes);
                 let cs: ContextSpecific<CertBag> = ContextSpecific::from_der(&safe_bag.bag_value)?;
-                let cert_der = cs.value.cert_value.as_bytes().to_vec();
+                let der = cs.value.cert_value.as_bytes().to_vec();
 
                 if main_cert
                     .as_ref()
-                    .is_none_or(|mc| mc.key_id.is_none() && key_id.is_some())
+                    .is_none_or(|mc| mc.cert.local_key_id.is_none() && attrs.local_key_id.is_some())
                 {
                     // Promote this to main cert; demote any previous main to additional
                     if let Some(prev) = main_cert.take() {
-                        additional_certs.push(prev.cert_der);
+                        additional_certs.push(prev.cert);
                     }
                     main_cert = Some(CertContents {
-                        cert_der,
-                        additional_cert_ders: Vec::new(),
-                        key_id,
-                        friendly_name,
+                        cert: CertAndAttributes {
+                            der,
+                            local_key_id: attrs.local_key_id,
+                            friendly_name: attrs.friendly_name,
+                            other_attributes: attrs.other,
+                        },
+                        additional_certs: Vec::new(),
                     });
                 } else {
-                    additional_certs.push(cert_der);
+                    additional_certs.push(CertAndAttributes {
+                        der,
+                        local_key_id: attrs.local_key_id,
+                        friendly_name: attrs.friendly_name,
+                        other_attributes: attrs.other,
+                    });
                 }
             }
             _ => {
@@ -208,7 +225,7 @@ fn extract_certs_from_safe_contents(plaintext: &[u8]) -> Result<CertContents> {
 
     match main_cert {
         Some(mut cc) => {
-            cc.additional_cert_ders = additional_certs;
+            cc.additional_certs = additional_certs;
             Ok(cc)
         }
         None => {
@@ -274,7 +291,7 @@ pub fn get_key(content: &Any, password: &str) -> Result<KeyContents> {
     for safe_bag in safe_bags {
         match safe_bag.bag_id {
             pkcs12::PKCS_12_PKCS8_KEY_BAG_OID => {
-                let key_id = get_key_id(safe_bag.bag_attributes);
+                let key_attrs = parse_attributes(safe_bag.bag_attributes);
 
                 // Try PKCS#12 legacy PBE first (requires legacy feature)
                 #[cfg(feature = "legacy")]
@@ -299,7 +316,7 @@ pub fn get_key(content: &Any, password: &str) -> Result<KeyContents> {
                             password,
                             &mut ciphertext,
                         )?;
-                        return Ok((Zeroizing::new(plaintext.to_vec()), key_id));
+                        return Ok((Zeroizing::new(plaintext.to_vec()), key_attrs));
                     }
                 }
 
@@ -336,7 +353,7 @@ pub fn get_key(content: &Any, password: &str) -> Result<KeyContents> {
                     .value
                     .encryption_algorithm
                     .decrypt_in_place(password, &mut ciphertext)?;
-                return Ok((Zeroizing::new(plaintext.to_vec()), key_id));
+                return Ok((Zeroizing::new(plaintext.to_vec()), key_attrs));
             }
             _ => {
                 warn!("Unexpected SafeBag type. Ignoring and continuing...");
@@ -420,49 +437,65 @@ pub fn get_cert(content: &Any, password: &str) -> Result<CertContents> {
     extract_certs_from_safe_contents(plaintext)
 }
 
-/// Takes an optional set of Attributes and returns the first value in the key ID attribute if present.
-fn get_key_id(attributes: Option<Attributes>) -> Option<Vec<u8>> {
+/// Parsed bag attributes: the well-known `localKeyID` and `friendlyName` values plus any
+/// remaining attributes.
+pub struct ParsedAttributes {
+    /// Optional `localKeyID` attribute value.
+    pub local_key_id: Option<Vec<u8>>,
+    /// Optional `friendlyName` attribute value.
+    pub friendly_name: Option<String>,
+    /// Any additional bag attributes beyond `localKeyID` and `friendlyName`.
+    pub other: Option<Vec<Attribute>>,
+}
+
+/// Extract `localKeyID`, `friendlyName`, and any remaining attributes from an optional attribute set.
+fn parse_attributes(attributes: Option<Attributes>) -> ParsedAttributes {
+    use const_oid::db::rfc2985::PKCS_9_AT_FRIENDLY_NAME;
+    use der::asn1::BmpString;
+
+    let mut local_key_id = None;
+    let mut friendly_name = None;
+    let mut other = Vec::new();
+
     if let Some(attributes) = attributes {
         for attribute in attributes.iter() {
             if attribute.oid == PKCS_9_AT_LOCAL_KEY_ID {
                 if let Some(value) = attribute.values.iter().next() {
-                    return Some(value.value().to_vec());
+                    local_key_id = Some(value.value().to_vec());
+                } else {
+                    warn!(
+                        "Found a key ID attribute but it had no value. Ignoring and continuing..."
+                    );
                 }
-                warn!("Found a key ID attribute but it had no value. Ignoring and continuing...");
-            }
-        }
-    }
-    None
-}
-
-/// Takes an optional set of Attributes and returns the `friendlyName` value if present.
-fn get_friendly_name(attributes: &Option<Attributes>) -> Option<String> {
-    use const_oid::db::rfc2985::PKCS_9_AT_FRIENDLY_NAME;
-    use der::asn1::BmpString;
-
-    if let Some(attributes) = attributes {
-        for attribute in attributes.iter() {
-            if attribute.oid == PKCS_9_AT_FRIENDLY_NAME {
+            } else if attribute.oid == PKCS_9_AT_FRIENDLY_NAME {
                 if let Some(value) = attribute.values.iter().next() {
                     if let Ok(bmp) = BmpString::from_der(&value.to_der().unwrap_or_default()) {
-                        return Some(bmp.to_string());
+                        friendly_name = Some(bmp.to_string());
+                    } else {
+                        warn!(
+                            "Found a friendlyName attribute but could not decode the BMP string. Ignoring and continuing..."
+                        );
                     }
-                    warn!(
-                        "Found a friendlyName attribute but could not decode the BMP string. Ignoring and continuing..."
-                    );
                 } else {
                     warn!(
                         "Found a friendlyName attribute but it had no value. Ignoring and continuing..."
                     );
                 }
+            } else {
+                other.push(attribute.clone());
             }
         }
     }
-    None
+
+    ParsedAttributes {
+        local_key_id,
+        friendly_name,
+        other: if other.is_empty() { None } else { Some(other) },
+    }
 }
 
 /// Takes a DER-encoded [PKCS #12 object](pkcs12::pfx::Pfx) and password, attempts to decrypt it and, if successful, returns
-/// a [Pkcs12Contents] containing the private key, the end-entity [Certificate], an optional key
+/// a [Pkcs12Contents] containing the private key, the end-entity certificate, an optional key
 /// identifier, and any additional certificates (e.g. CA/intermediate chain certificates).
 ///
 /// This method assumes this basic high-level representation of the structure (though the order of
@@ -492,7 +525,7 @@ fn get_friendly_name(attributes: &Option<Attributes>) -> Option<String> {
 ///     }
 ///   }
 /// ```
-pub fn get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents> {
+pub fn parse_pkcs12(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents> {
     let mut recovered_cert_data = None;
     let mut recovered_key_and_key_id = None;
     let pfx = Pfx::from_der(der_p12)?;
@@ -513,24 +546,20 @@ pub fn get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents
         }
     }
     if let Some(cert_contents) = recovered_cert_data
-        && let Some((recovered_key, key_id)) = recovered_key_and_key_id
+        && let Some((recovered_key, key_attrs)) = recovered_key_and_key_id
     {
-        let key_id = if key_id.is_some() {
-            key_id
+        let key_id = if key_attrs.local_key_id.is_some() {
+            key_attrs.local_key_id
         } else {
-            cert_contents.key_id
+            cert_contents.cert.local_key_id.clone()
         };
-        let mut additional_certificates =
-            Vec::with_capacity(cert_contents.additional_cert_ders.len());
-        for der in &cert_contents.additional_cert_ders {
-            additional_certificates.push(Certificate::from_der(der)?);
-        }
         return Ok(Pkcs12Contents {
             key_der: recovered_key,
-            certificate: Certificate::from_der(&cert_contents.cert_der)?,
             key_id,
-            friendly_name: cert_contents.friendly_name,
-            additional_certificates,
+            friendly_name: key_attrs.friendly_name,
+            other_key_attributes: key_attrs.other,
+            certificate: cert_contents.cert,
+            additional_certificates: cert_contents.additional_certs,
         });
     }
     Err(Error::NotFound)

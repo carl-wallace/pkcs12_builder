@@ -20,8 +20,7 @@ pub mod supported_algs;
 
 #[doc(inline)]
 pub use asn1_utils::{
-    CertContents, Pkcs12Contents, get_auth_safes, get_cert, get_key, get_key_and_cert,
-    get_safe_bags,
+    CertAndAttributes, CertContents, ParsedAttributes, Pkcs12Contents, parse_pkcs12,
 };
 #[doc(inline)]
 pub use error::{Error, Result};
@@ -369,9 +368,8 @@ impl Pkcs12Builder {
         let mut salt = vec![0_u8; 16];
         rng.fill_bytes(salt.as_mut_slice());
 
-        let mut md_builder = MacDataBuilder::new(MacAlgorithm::HmacSha256);
+        let mut md_builder = MacDataBuilder::new_with_salt(MacAlgorithm::HmacSha256, salt);
         md_builder.iterations(Some(iterations))?;
-        md_builder.salt(Some(salt.to_vec()));
         Ok(md_builder)
     }
     fn default_kdf_alg<R>(rng: &mut R, iteration_count: u32) -> Result<AlgorithmIdentifierOwned>

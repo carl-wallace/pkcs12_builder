@@ -50,13 +50,14 @@ impl MacDataBuilder {
     }
 
     /// Specify a salt value for use on the subsequent [`build`](MacDataBuilder::build) invocation.
-    pub fn salt(&mut self, salt: Option<Vec<u8>>) {
+    pub fn salt(&mut self, salt: Option<Vec<u8>>) -> &mut Self {
         if let Some(salt) = &salt {
             if 16 > salt.len() {
                 warn!("The provided salt value is shorter than the recommended 16 bytes.");
             }
         }
         self.salt = salt;
+        self
     }
 
     /// Returns true if a `salt` value has been specified and false if not.

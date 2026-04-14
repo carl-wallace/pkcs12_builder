@@ -14,17 +14,19 @@ Helper functions [add_key_id_attr] and [add_friendly_name_attr] are provided for
 - Configurable MAC algorithm and iteration count
 - Optional additional certificates (CA/intermediate chain)
 - `localKeyID` and `friendlyName` attribute helpers
-- Parsing and decryption of existing PKCS #12 files via [get_key_and_cert]
+- Parsing and decryption of existing PKCS #12 files via [parse_pkcs12]
+- Per-bag attribute preservation (key ID, friendly name, and arbitrary attributes are retained for each certificate and the key bag)
 - Legacy PKCS #12 PBE support (SHA-1/3DES-CBC, SHA-1/RC2-CBC) with the `legacy` feature
 
 ## Quick start
 
 ```rust,ignore
 use der::asn1::SetOfVec;
-use pkcs12_builder::{Pkcs12Builder, MacDataBuilder, add_key_id_attr, add_friendly_name_attr};
-use pkcs12_builder::asn1_utils::get_key_and_cert;
+use pkcs12_builder::{
+    Pkcs12Builder, MacDataBuilder, parse_pkcs12,
+    add_key_id_attr, add_friendly_name_attr,
+};
 use pkcs12_builder::supported_algs::{EncryptionAlgorithm, MacAlgorithm};
-use rand::rngs::OsRng;
 
 // Assume `cert` is a parsed x509_cert::Certificate and `key` is DER-encoded PKCS #8
 let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
@@ -35,6 +37,7 @@ add_friendly_name_attr(&mut cert_attrs, "My Certificate").unwrap();
 
 let mut key_attrs = SetOfVec::new();
 add_key_id_attr(&mut key_attrs, &key_id).unwrap();
+add_friendly_name_attr(&mut key_attrs, "My Certificate").unwrap();
 
 let mut mac_builder = MacDataBuilder::new(MacAlgorithm::HmacSha256);
 mac_builder.iterations(Some(600_000)).unwrap();
@@ -47,13 +50,13 @@ builder
     .mac_data_builder(Some(mac_builder));
 
 let der_pfx = builder
-    .build_with_rng(&cert, key, "password", &mut OsRng)
+    .build_with_rng(&cert, key, "password", &mut rand::rng())
     .unwrap();
 
 // Round-trip: parse back the PKCS #12 file
-let contents = get_key_and_cert(&der_pfx, "password").unwrap();
+let contents = parse_pkcs12(&der_pfx, "password").unwrap();
 assert_eq!(contents.key_der.as_ref(), key);
-assert_eq!(contents.certificate, cert);
+assert_eq!(contents.certificate.der, cert_der);
 ```
 
 ## API reference
@@ -122,33 +125,23 @@ Builder for the `MacData` integrity structure.
 
 ### Parsing
 
-**`get_key_and_cert(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents>`**
+**`parse_pkcs12(der_p12: &[u8], password: &str) -> Result<Pkcs12Contents>`**
 
 Decrypt a DER-encoded PKCS #12 file and return its contents.
 
 **`Pkcs12Contents`** fields:
 - `key_der: Zeroizing<Vec<u8>>` — DER-encoded private key
-- `certificate: Certificate` — parsed end-entity certificate
-- `key_id: Option<Vec<u8>>` — optional `localKeyID` attribute value
+- `key_id: Option<Vec<u8>>` — optional `localKeyID` from the key bag
+- `friendly_name: Option<String>` — optional `friendlyName` from the key bag
+- `other_key_attributes: Option<Vec<Attribute>>` — any additional key bag attributes
+- `certificate: CertAndAttributes` — end-entity certificate and its bag attributes
+- `additional_certificates: Vec<CertAndAttributes>` — CA/intermediate chain certificates and their bag attributes
+
+**`CertAndAttributes`** fields:
+- `der: Vec<u8>` — DER-encoded certificate
+- `local_key_id: Option<Vec<u8>>` — optional `localKeyID` attribute value
 - `friendly_name: Option<String>` — optional `friendlyName` attribute value
-- `additional_certificates: Vec<Certificate>` — CA/intermediate chain certificates
-
-### Lower-level parsing helpers
-
-| Function | Description |
-|----------|-------------|
-| `get_auth_safes(&Any)` | Extract `AuthenticatedSafe` from a `Pfx` content field |
-| `get_safe_bags(&Any)` | Extract `SafeContents` from an `AuthenticatedSafe` entry |
-| `get_key(&Any, &str)` | Decrypt and return the key from a `SafeContents` (returns `KeyContents`) |
-| `get_cert(&Any, &str)` | Decrypt and return certificate data from an `EncryptedData` (returns `CertContents`) |
-
-**`KeyContents`** — type alias for `(Zeroizing<Vec<u8>>, Option<Vec<u8>>)`: the decrypted key bytes (zeroized on drop) and an optional `localKeyID`.
-
-**`CertContents`** fields:
-- `cert_der: Vec<u8>` — DER-encoded main (end-entity) certificate
-- `additional_cert_ders: Vec<Vec<u8>>` — DER-encoded additional certificates (CA / intermediate chain)
-- `key_id: Option<Vec<u8>>` — optional `localKeyID` attribute value
-- `friendly_name: Option<String>` — optional `friendlyName` attribute value
+- `other_attributes: Option<Vec<Attribute>>` — any additional bag attributes
 
 ### Attribute helpers
 
