@@ -139,7 +139,11 @@ impl MacDataBuilder {
     pub fn build(&self, password: &str, content: &[u8]) -> Result<MacData> {
         let salt = match &self.salt {
             Some(salt) => salt,
-            None => return Err(Error::Pkcs12Builder(String::from("No salt provided for MacData"))),
+            None => {
+                return Err(Error::Pkcs12Builder(String::from(
+                    "No salt provided for MacData",
+                )));
+            }
         };
 
         let mac_key = self.generate_mac_key(password, salt)?;

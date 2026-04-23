@@ -687,7 +687,9 @@ impl Pkcs12Builder {
         let key_ciphertext = match key_scheme.encrypt_in_place(password, &mut enc_buf, key.len()) {
             Ok(ct) => ct,
             Err(e) => {
-                return Err(Error::Pkcs12Builder(format!("Failed to encrypt key: {e:?}")));
+                return Err(Error::Pkcs12Builder(format!(
+                    "Failed to encrypt key: {e:?}"
+                )));
             }
         };
 
@@ -888,7 +890,9 @@ fn pkcs12_pbe_encrypt(
     match alg {
         LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc => {
             let ct = cbc::Encryptor::<des::TdesEde3>::new_from_slices(&key, &iv)
-                .map_err(|e| Error::Pkcs12Builder(format!("Failed to init 3DES-CBC encryptor: {e}")))?
+                .map_err(|e| {
+                    Error::Pkcs12Builder(format!("Failed to init 3DES-CBC encryptor: {e}"))
+                })?
                 .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
                 .map_err(|e| Error::Pkcs12Builder(format!("3DES-CBC encryption failed: {e}")))?;
             Ok(ct.to_vec())
@@ -896,7 +900,9 @@ fn pkcs12_pbe_encrypt(
         LegacyPbeAlgorithm::ShaAnd128BitRc2Cbc => {
             let cipher = rc2::Rc2::new_with_eff_key_len(&key, 128);
             let ct = cbc::Encryptor::<rc2::Rc2>::inner_iv_slice_init(cipher, &iv)
-                .map_err(|e| Error::Pkcs12Builder(format!("Failed to init RC2-128-CBC encryptor: {e}")))?
+                .map_err(|e| {
+                    Error::Pkcs12Builder(format!("Failed to init RC2-128-CBC encryptor: {e}"))
+                })?
                 .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
                 .map_err(|e| Error::Pkcs12Builder(format!("RC2-128-CBC encryption failed: {e}")))?;
             Ok(ct.to_vec())
