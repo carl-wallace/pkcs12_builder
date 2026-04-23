@@ -605,8 +605,6 @@ fn cert_id_only_test() {
 #[cfg(not(feature = "legacy"))]
 #[test]
 fn legacy_pbe_cert_rejected_without_feature() {
-    use pkcs12_builder::get_cert;
-
     // Build a valid PBES2 P12, then replace the cert EncryptedData's algorithm OID
     // with a legacy PBE OID to simulate a legacy-encrypted cert bag.
     let mut p12_builder = Pkcs12Builder::new();

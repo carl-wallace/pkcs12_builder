@@ -70,7 +70,7 @@ impl MacDataBuilder {
     pub fn iterations(&mut self, iterations: Option<u32>) -> Result<&mut Self> {
         if let Some(iterations) = iterations {
             if iterations > i32::MAX as u32 {
-                return Err(Error::General(format!(
+                return Err(Error::Pkcs12Builder(format!(
                     "Invalid number of iterations provided ({iterations})"
                 )));
             }
@@ -139,7 +139,7 @@ impl MacDataBuilder {
     pub fn build(&self, password: &str, content: &[u8]) -> Result<MacData> {
         let salt = match &self.salt {
             Some(salt) => salt,
-            None => return Err(Error::General(String::from("No salt provided for MacData"))),
+            None => return Err(Error::Pkcs12Builder(String::from("No salt provided for MacData"))),
         };
 
         let mac_key = self.generate_mac_key(password, salt)?;

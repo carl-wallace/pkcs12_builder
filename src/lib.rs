@@ -417,7 +417,7 @@ impl Pkcs12Builder {
     pub fn iterations(&mut self, iterations: Option<u32>) -> Result<&mut Self> {
         if let Some(iterations) = iterations {
             if iterations > i32::MAX as u32 {
-                return Err(Error::General(format!(
+                return Err(Error::Pkcs12Builder(format!(
                     "Invalid number of iterations provided ({iterations})"
                 )));
             }
@@ -589,13 +589,13 @@ impl Pkcs12Builder {
             Some(cert_kdf_alg) => match &cert_kdf_alg.parameters {
                 Some(params) => params.to_der()?,
                 None => {
-                    return Err(Error::General(String::from(
+                    return Err(Error::Pkcs12Builder(String::from(
                         "No parameters provided for certificate KDF algorithm",
                     )));
                 }
             },
             None => {
-                return Err(Error::General(String::from(
+                return Err(Error::Pkcs12Builder(String::from(
                     "No certificate KDF algorithm provided",
                 )));
             }
@@ -606,7 +606,7 @@ impl Pkcs12Builder {
         let der_cert_enc_alg = match &self.cert_enc_algorithm_identifier {
             Some(cert_enc_alg) => cert_enc_alg.to_der()?,
             None => {
-                return Err(Error::General(String::from(
+                return Err(Error::Pkcs12Builder(String::from(
                     "No certificate encryption algorithm provided",
                 )));
             }
@@ -625,7 +625,7 @@ impl Pkcs12Builder {
             match cert_scheme.encrypt_in_place(password, &mut enc_buf, der_cert_safe_bags.len()) {
                 Ok(ct) => ct,
                 Err(e) => {
-                    return Err(Error::General(format!(
+                    return Err(Error::Pkcs12Builder(format!(
                         "Failed to encrypt certificate: {e:?}"
                     )));
                 }
@@ -654,13 +654,13 @@ impl Pkcs12Builder {
             Some(key_kdf_alg) => match &key_kdf_alg.parameters {
                 Some(params) => params.to_der()?,
                 None => {
-                    return Err(Error::General(String::from(
+                    return Err(Error::Pkcs12Builder(String::from(
                         "No parameters provided for key KDF algorithm",
                     )));
                 }
             },
             None => {
-                return Err(Error::General(String::from(
+                return Err(Error::Pkcs12Builder(String::from(
                     "No key KDF algorithm provided",
                 )));
             }
@@ -670,7 +670,7 @@ impl Pkcs12Builder {
         let der_key_enc_alg = match &self.key_enc_algorithm_identifier {
             Some(key_enc_alg) => key_enc_alg.to_der()?,
             None => {
-                return Err(Error::General(String::from(
+                return Err(Error::Pkcs12Builder(String::from(
                     "No key encryption algorithm provided",
                 )));
             }
@@ -687,7 +687,7 @@ impl Pkcs12Builder {
         let key_ciphertext = match key_scheme.encrypt_in_place(password, &mut enc_buf, key.len()) {
             Ok(ct) => ct,
             Err(e) => {
-                return Err(Error::General(format!("Failed to encrypt key: {e:?}")));
+                return Err(Error::Pkcs12Builder(format!("Failed to encrypt key: {e:?}")));
             }
         };
 
@@ -733,7 +733,7 @@ impl Pkcs12Builder {
         let enc_data1 = if let Some(legacy_alg) = &self.cert_legacy_pbe {
             let iterations = self.get_iterations();
             let salt = self.cert_legacy_pbe_salt.as_ref().ok_or_else(|| {
-                Error::General(String::from(
+                Error::Pkcs12Builder(String::from(
                     "No salt provided for certificate legacy PBE. Use build_with_rng to generate salts automatically.",
                 ))
             })?;
@@ -774,7 +774,7 @@ impl Pkcs12Builder {
         let der_enc_epki = if let Some(legacy_alg) = &self.key_legacy_pbe {
             let iterations = self.get_iterations();
             let salt = self.key_legacy_pbe_salt.as_ref().ok_or_else(|| {
-                Error::General(String::from(
+                Error::Pkcs12Builder(String::from(
                     "No salt provided for key legacy PBE. Use build_with_rng to generate salts automatically.",
                 ))
             })?;
@@ -836,7 +836,7 @@ impl Pkcs12Builder {
             Some(md_build) => Some(md_build.build(password, &content_bytes)?),
             None => {
                 if !self.omit_mac {
-                    return Err(Error::General(String::from(
+                    return Err(Error::Pkcs12Builder(String::from(
                         "No MacData builder was found but one was expected. This is a bug.",
                     )));
                 }
@@ -888,17 +888,17 @@ fn pkcs12_pbe_encrypt(
     match alg {
         LegacyPbeAlgorithm::ShaAnd3KeyTripleDesCbc => {
             let ct = cbc::Encryptor::<des::TdesEde3>::new_from_slices(&key, &iv)
-                .map_err(|e| Error::General(format!("Failed to init 3DES-CBC encryptor: {e}")))?
+                .map_err(|e| Error::Pkcs12Builder(format!("Failed to init 3DES-CBC encryptor: {e}")))?
                 .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
-                .map_err(|e| Error::General(format!("3DES-CBC encryption failed: {e}")))?;
+                .map_err(|e| Error::Pkcs12Builder(format!("3DES-CBC encryption failed: {e}")))?;
             Ok(ct.to_vec())
         }
         LegacyPbeAlgorithm::ShaAnd128BitRc2Cbc => {
             let cipher = rc2::Rc2::new_with_eff_key_len(&key, 128);
             let ct = cbc::Encryptor::<rc2::Rc2>::inner_iv_slice_init(cipher, &iv)
-                .map_err(|e| Error::General(format!("Failed to init RC2-128-CBC encryptor: {e}")))?
+                .map_err(|e| Error::Pkcs12Builder(format!("Failed to init RC2-128-CBC encryptor: {e}")))?
                 .encrypt_padded::<Pkcs7>(&mut buf, plaintext.len())
-                .map_err(|e| Error::General(format!("RC2-128-CBC encryption failed: {e}")))?;
+                .map_err(|e| Error::Pkcs12Builder(format!("RC2-128-CBC encryption failed: {e}")))?;
             Ok(ct.to_vec())
         }
     }
