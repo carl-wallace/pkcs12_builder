@@ -6,11 +6,11 @@
 
 use std::process::Command;
 
-use der::{Decode, Encode};
+use der::Decode;
 use tempfile::TempDir;
 use x509_cert::Certificate;
 
-use pkcs12_builder::{MacAlgorithm, MacDataBuilder, Pkcs12Builder, asn1_utils::get_key_and_cert};
+use pkcs12_builder::{MacAlgorithm, MacDataBuilder, Pkcs12Builder, asn1_utils::parse_pkcs12};
 
 const PASSWORD: &str = "sha1-test-pass";
 
@@ -138,10 +138,10 @@ fn openssl_sha1_mac_rust_reads() {
     let p12_bytes = openssl_export_sha1_mac(&cert_pem, &key_pem);
 
     let contents =
-        get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert with SHA1 MAC failed");
+        parse_pkcs12(&p12_bytes, PASSWORD).expect("get_key_and_cert with SHA1 MAC failed");
 
     assert_eq!(*contents.key_der, key_der);
-    assert_eq!(contents.certificate.to_der().unwrap(), cert_der);
+    assert_eq!(contents.certificate.der, cert_der);
 }
 
 /// Verify that MAC verification fails with the wrong password on a SHA-1 MAC file.
@@ -151,7 +151,7 @@ fn openssl_sha1_mac_wrong_password_fails() {
 
     let p12_bytes = openssl_export_sha1_mac(&cert_pem, &key_pem);
 
-    let result = get_key_and_cert(&p12_bytes, "wrong-password");
+    let result = parse_pkcs12(&p12_bytes, "wrong-password");
     assert!(
         result.is_err(),
         "SHA1 MAC verification should fail with wrong password"
@@ -177,7 +177,7 @@ fn mac_data_builder_accepts_sha1() {
 
     // Verify the generated P12 can be parsed back with MAC verification
     let p12_bytes = result.unwrap();
-    let contents = pkcs12_builder::get_key_and_cert(&p12_bytes, "password");
+    let contents = pkcs12_builder::parse_pkcs12(&p12_bytes, "password");
     assert!(
         contents.is_ok(),
         "should be able to parse back P12 with SHA-1 MAC"

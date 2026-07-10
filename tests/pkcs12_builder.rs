@@ -19,8 +19,10 @@ use rand_core::Rng;
 use x509_cert::Certificate;
 
 use pkcs12_builder::{
-    EncryptionAlgorithm, MacAlgorithm, MacDataBuilder, Pkcs12Builder, add_key_id_attr,
-    get_auth_safes, get_cert, get_key, get_key_and_cert, get_safe_bags,
+    EncryptionAlgorithm, MacAlgorithm, MacDataBuilder, Pkcs12Builder, add_friendly_name_attr,
+    add_key_id_attr,
+    asn1_utils::{get_auth_safes, get_cert, get_key, get_safe_bags},
+    parse_pkcs12,
 };
 
 #[cfg(test)]
@@ -38,18 +40,18 @@ fn check_key_and_cert(
         if ID_ENCRYPTED_DATA == auth_safe.content_type {
             // certificate
             let recovered_cert = get_cert(&auth_safe.content, password).unwrap();
-            assert_eq!(recovered_cert.cert_der, cert);
-            assert_eq!(&recovered_cert.key_id, cert_id);
+            assert_eq!(recovered_cert.cert.der, cert);
+            assert_eq!(&recovered_cert.cert.local_key_id, cert_id);
         } else if ID_DATA == auth_safe.content_type {
             // key
             let recovered_key = get_key(&auth_safe.content, password).unwrap();
             assert_eq!(*recovered_key.0, key);
-            assert_eq!(&recovered_key.1, key_id);
+            assert_eq!(&recovered_key.1.local_key_id, key_id);
         }
     }
 
-    let contents = get_key_and_cert(der_p12, password).unwrap();
-    assert_eq!(contents.certificate.to_der().unwrap(), cert);
+    let contents = parse_pkcs12(der_p12, password).unwrap();
+    assert_eq!(contents.certificate.der, cert);
     assert_eq!(*contents.key_der, key);
     if key_id.is_some() {
         assert_eq!(&contents.key_id, key_id);
@@ -57,7 +59,7 @@ fn check_key_and_cert(
         assert_eq!(&contents.key_id, cert_id);
     }
 
-    assert!(get_key_and_cert(der_p12, &format!("{password}X")).is_err());
+    assert!(parse_pkcs12(der_p12, &format!("{password}X")).is_err());
 }
 #[cfg(test)]
 fn check_algs(
@@ -190,9 +192,9 @@ fn p12_simple() {
         .cert_attributes(Some(cert_attrs.clone()))
         .build_with_rng(&cert.clone(), key, "password", &mut rand::rng())
         .unwrap();
-    let contents = get_key_and_cert(&der_pfx, "password").unwrap();
+    let contents = parse_pkcs12(&der_pfx, "password").unwrap();
     assert_eq!(*contents.key_der, key);
-    assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
+    assert_eq!(contents.certificate.der, cert_bytes);
     assert_eq!(contents.key_id, Some(key_id.to_vec()));
 }
 
@@ -396,8 +398,8 @@ fn p12_builder_test() {
     let der_pfx = p12_builder.build(&cert, key, "").unwrap();
     assert_eq!(der_pfx, orig_p12);
 
-    let contents = get_key_and_cert(&der_pfx, "").unwrap();
-    assert_eq!(contents.certificate.to_der().unwrap(), cert_bytes);
+    let contents = parse_pkcs12(&der_pfx, "").unwrap();
+    assert_eq!(contents.certificate.der, cert_bytes);
     assert_eq!(*contents.key_der, key);
     assert_eq!(contents.key_id, Some(key_id.to_vec()));
 }
@@ -603,8 +605,6 @@ fn cert_id_only_test() {
 #[cfg(not(feature = "legacy"))]
 #[test]
 fn legacy_pbe_cert_rejected_without_feature() {
-    use pkcs12_builder::get_cert;
-
     // Build a valid PBES2 P12, then replace the cert EncryptedData's algorithm OID
     // with a legacy PBE OID to simulate a legacy-encrypted cert bag.
     let mut p12_builder = Pkcs12Builder::new();
@@ -662,7 +662,7 @@ fn legacy_pbe_cert_rejected_without_feature() {
 #[cfg(not(feature = "legacy"))]
 #[test]
 fn legacy_pbe_key_rejected_without_feature() {
-    use pkcs12_builder::get_key;
+    use pkcs12_builder::asn1_utils::get_key;
 
     // Build a valid PBES2 P12, extract the key auth_safe content, then tamper the
     // key encryption OID to a legacy PBE OID.
@@ -758,7 +758,7 @@ fn excessive_mac_iterations_rejected() {
     mac_data.iterations = 100_000_001;
     let tampered = pfx.to_der().unwrap();
 
-    let err = match get_key_and_cert(&tampered, "test") {
+    let err = match parse_pkcs12(&tampered, "test") {
         Err(e) => e,
         Ok(_) => panic!("Expected error for excessive iterations"),
     };
@@ -767,4 +767,90 @@ fn excessive_mac_iterations_rejected() {
         msg.contains("iterations"),
         "Expected error about iterations limit, got: {msg}"
     );
+}
+
+/// Helper to build a PKCS #12 with Oracle TrustedKeyUsage attributes on both key and cert bags.
+#[allow(clippy::unwrap_used)]
+fn build_p12_with_oracle_tku() -> Vec<u8> {
+    use const_oid::ObjectIdentifier;
+    use const_oid::db::rfc5280::ANY_EXTENDED_KEY_USAGE;
+    use x509_cert::attr::Attribute;
+
+    let key = include_bytes!("../tests/examples/key.der");
+    let cert_bytes = include_bytes!("../tests/examples/cert.der");
+    let cert = Certificate::from_der(cert_bytes).unwrap();
+
+    let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
+
+    // Oracle TrustedKeyUsage attribute: OID value = anyExtendedKeyUsage
+    let oracle_trusted_key_usage = ObjectIdentifier::new_unwrap("2.16.840.1.113894.746875.1.1");
+    let eku_bytes = ANY_EXTENDED_KEY_USAGE.to_der().unwrap();
+    let eku_ref = AnyRef::try_from(eku_bytes.as_slice()).unwrap();
+    let mut tku_values = SetOfVec::new();
+    tku_values.insert(Any::from(eku_ref)).unwrap();
+    let tku_attr = Attribute {
+        oid: oracle_trusted_key_usage,
+        values: tku_values,
+    };
+
+    // Key bag: localKeyID + friendlyName + TrustedKeyUsage
+    let mut key_attrs = SetOfVec::new();
+    add_key_id_attr(&mut key_attrs, &key_id).unwrap();
+    add_friendly_name_attr(&mut key_attrs, "my-key").unwrap();
+    key_attrs.insert(tku_attr.clone()).unwrap();
+
+    // Cert bag: localKeyID + friendlyName + TrustedKeyUsage
+    let mut cert_attrs = SetOfVec::new();
+    add_key_id_attr(&mut cert_attrs, &key_id).unwrap();
+    add_friendly_name_attr(&mut cert_attrs, "my-cert").unwrap();
+    cert_attrs.insert(tku_attr.clone()).unwrap();
+
+    Pkcs12Builder::new()
+        .iterations(Some(2048))
+        .unwrap()
+        .key_attributes(Some(key_attrs))
+        .cert_attributes(Some(cert_attrs))
+        .build_with_rng(&cert, key, "password", &mut rand::rng())
+        .unwrap()
+}
+
+/// Build a PKCS #12 with an ORACLE_TrustedKeyUsage attribute on both the key and cert bags,
+/// alongside the well-known localKeyID and friendlyName, and verify they all round-trip.
+#[allow(clippy::unwrap_used)]
+#[test]
+fn other_attributes_roundtrip() {
+    use const_oid::ObjectIdentifier;
+
+    let key = include_bytes!("../tests/examples/key.der");
+    let cert_bytes = include_bytes!("../tests/examples/cert.der");
+    let key_id = hex_literal::hex!("EF 09 61 31 5F 51 9D 61 F2 69 7D 9E 75 E5 52 15 D0 7B 00 6D");
+    let oracle_trusted_key_usage = ObjectIdentifier::new_unwrap("2.16.840.1.113894.746875.1.1");
+
+    let der_pfx = build_p12_with_oracle_tku();
+
+    let contents = parse_pkcs12(&der_pfx, "password").unwrap();
+
+    // Key bag attributes
+    assert_eq!(*contents.key_der, key);
+    assert_eq!(contents.key_id, Some(key_id.to_vec()));
+    assert_eq!(contents.friendly_name.as_deref(), Some("my-key"));
+    let key_other = contents
+        .other_key_attributes
+        .expect("expected other key attributes");
+    assert_eq!(key_other.len(), 1);
+    assert_eq!(key_other[0].oid, oracle_trusted_key_usage);
+
+    // Cert bag attributes
+    assert_eq!(contents.certificate.der, cert_bytes);
+    assert_eq!(contents.certificate.local_key_id, Some(key_id.to_vec()));
+    assert_eq!(
+        contents.certificate.friendly_name.as_deref(),
+        Some("my-cert")
+    );
+    let cert_other = contents
+        .certificate
+        .other_attributes
+        .expect("expected other cert attributes");
+    assert_eq!(cert_other.len(), 1);
+    assert_eq!(cert_other[0].oid, oracle_trusted_key_usage);
 }

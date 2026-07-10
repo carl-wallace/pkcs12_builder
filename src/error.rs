@@ -10,8 +10,6 @@ pub enum Error {
     Asn1(der::Error),
     /// Invalid key length
     InvalidLength(crypto_common::InvalidLength),
-    /// Generic string-based error for conditions not covered by other variants
-    General(String),
     /// Something that was sought was not found
     NotFound,
     /// PKCS5-related error
@@ -43,7 +41,6 @@ impl core::fmt::Display for Error {
         match self {
             Error::Asn1(e) => write!(f, "ASN.1 error: {e}"),
             Error::InvalidLength(e) => write!(f, "invalid length: {e}"),
-            Error::General(msg) => write!(f, "{msg}"),
             Error::NotFound => write!(f, "not found"),
             Error::Pkcs5(e) => write!(f, "PKCS#5 error: {e}"),
             Error::Pkcs12Builder(msg) => write!(f, "{msg}"),

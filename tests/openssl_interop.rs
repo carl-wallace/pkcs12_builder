@@ -7,14 +7,14 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
-use der::Decode;
+use der::{Decode, Encode};
 use pkcs5::pbes2::Pbkdf2Prf;
 use tempfile::TempDir;
 use x509_cert::Certificate;
 
 use pkcs12_builder::{
     Pkcs12Builder,
-    asn1_utils::get_key_and_cert,
+    asn1_utils::parse_pkcs12,
     mac_data_builder::MacDataBuilder,
     supported_algs::{EncryptionAlgorithm, MacAlgorithm},
 };
@@ -425,14 +425,15 @@ fn rust_chain_openssl_reads() {
     );
 
     // Verify the Rust parser recovers the additional certificate
-    let contents = get_key_and_cert(&p12, PASSWORD).expect("get_key_and_cert with chain");
+    let contents = parse_pkcs12(&p12, PASSWORD).expect("get_key_and_cert with chain");
     assert_eq!(
         contents.additional_certificates.len(),
         1,
         "expected one additional certificate"
     );
     assert_eq!(
-        contents.additional_certificates[0], ca_cert,
+        contents.additional_certificates[0].der,
+        ca_cert.to_der().unwrap(),
         "additional certificate should match the CA cert"
     );
 }
@@ -535,7 +536,7 @@ fn openssl_builds_rust_reads() {
 
     let p12_bytes = openssl_export(&cert_pem, &key_pem);
 
-    let contents = get_key_and_cert(&p12_bytes, PASSWORD).expect("get_key_and_cert failed");
+    let contents = parse_pkcs12(&p12_bytes, PASSWORD).expect("get_key_and_cert failed");
 
     assert!(
         !contents.key_der.is_empty(),
@@ -543,7 +544,8 @@ fn openssl_builds_rust_reads() {
     );
 
     // The subject should contain the CN we encoded above
-    let subject = contents.certificate.tbs_certificate().subject().to_string();
+    let recovered_cert = x509_cert::Certificate::from_der(&contents.certificate.der).unwrap();
+    let subject = recovered_cert.tbs_certificate().subject().to_string();
     assert!(
         subject.contains("openssl-builds-rust-reads"),
         "unexpected subject: {subject}"
