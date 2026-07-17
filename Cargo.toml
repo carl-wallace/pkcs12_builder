@@ -5,34 +5,34 @@ edition = "2024"
 rust-version = "1.85.0"
 
 [dependencies]
-cms = { version = "0.3.0-pre.2" }
-const-oid = { version = "0.10.2", features = ["db"] }
-der = { version = "0.8.1", features = ["alloc", "derive", "oid", "pem"] }
-pkcs5 = "0.8.1"
-pkcs8 = { version = "0.11.0", features = ["encryption"] }
-pkcs12 = { version = "0.2.0-pre.0", features = ["kdf"] }
-spki = "0.8.0"
-x509-cert = { version = "0.3.0", features = ["hazmat", "builder"] }
+cms = { version = "0.3.0-pre.2", default-features = false }
+const-oid = { version = "0.10.2", default-features = false, features = ["db"] }
+der = { version = "0.8.1", default-features = false, features = ["alloc", "derive", "oid", "pem"] }
+pkcs5 = { version = "0.8.1", default-features = false, features = ["pbes2"] }
+pkcs8 = { version = "0.11.0", default-features = false, features = ["encryption"] }
+pkcs12 = { version = "0.2.0-pre.0", default-features = false, features = ["kdf"] }
+spki = { version = "0.8.0", default-features = false }
+x509-cert = { version = "0.3.0", default-features = false, features = ["hazmat", "builder"] }
 
-crypto-common = "0.2.0"
-hmac = "0.13.0"
-cbc = { version = "0.2.0", optional = true }
-des = { version = "0.9.0", optional = true }
-rc2 = { version = "0.9.0", optional = true }
-sha1 = { version = "0.11.0", optional = true }
-sha2 = "0.11.0"
+crypto-common = { version = "0.2.0", default-features = false }
+hmac = { version = "0.13.0", default-features = false }
+cbc = { version = "0.2.0", default-features = false, optional = true }
+des = { version = "0.9.0", default-features = false, optional = true }
+rc2 = { version = "0.9.0", default-features = false, optional = true }
+sha1 = { version = "0.11.0", default-features = false, optional = true }
+sha2 = { version = "0.11.0", default-features = false }
 
 log = "0.4.29"
-rand = "0.10.0"
-zeroize = { version = "1", features = ["alloc"] }
-rand_core = { version = "0.10.0" }
-subtle = "2.6.1"
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+rand_core = { version = "0.10.0", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
 
 [features]
 legacy = ["dep:sha1", "dep:des", "dep:rc2", "dep:cbc", "pkcs5/sha1-insecure", "pkcs5/3des"]
 
 [dev-dependencies]
 hex-literal = "1.1.0"
+rand = "0.10.0"
 openssl = {version = "0.10.75", features = ["vendored"]}
 subtle-encoding = "0.5.1"
 tempfile = "3.26.0"
