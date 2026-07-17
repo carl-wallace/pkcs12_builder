@@ -28,7 +28,6 @@ fn generate_credentials() -> (String, String, Vec<u8>, Vec<u8>, TempDir) {
     let ok = Command::new("openssl")
         .args([
             "genpkey",
-            "-quiet",
             "-algorithm",
             "RSA",
             "-pkeyopt",
@@ -43,7 +42,6 @@ fn generate_credentials() -> (String, String, Vec<u8>, Vec<u8>, TempDir) {
     let ok = Command::new("openssl")
         .args([
             "req",
-            "-quiet",
             "-new",
             "-x509",
             "-key",
