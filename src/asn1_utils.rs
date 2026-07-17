@@ -1,5 +1,9 @@
 //! Utility functions for interacting with ASN.1 structures associated with [PKCS #12 objects](pkcs12::pfx::Pfx)
 
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
 use log::{error, warn};
 
 #[cfg(feature = "legacy")]

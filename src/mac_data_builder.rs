@@ -1,5 +1,9 @@
 //! Structure to help with generating [MacData] objects
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 #[cfg(feature = "legacy")]
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
@@ -37,7 +41,7 @@ impl MacDataBuilder {
     /// Creates a new MacDataBuilder instance with the provided salt suitable for further
     /// customization prior to invoking build. By default, iterations will be set to 600,000.
     pub fn new_with_salt(digest_algorithm: MacAlgorithm, salt: Vec<u8>) -> MacDataBuilder {
-        if 16 > salt.len() {
+        if salt.len() < 16 {
             warn!(
                 "The salt value passed to new_with_salt is shorter than the recommended 16 bytes."
             );
@@ -52,7 +56,7 @@ impl MacDataBuilder {
     /// Specify a salt value for use on the subsequent [`build`](MacDataBuilder::build) invocation.
     pub fn salt(&mut self, salt: Option<Vec<u8>>) -> &mut Self {
         if let Some(salt) = &salt {
-            if 16 > salt.len() {
+            if salt.len() < 16 {
                 warn!("The provided salt value is shorter than the recommended 16 bytes.");
             }
         }
@@ -148,8 +152,8 @@ impl MacDataBuilder {
 
         let mac_key = self.generate_mac_key(password, salt)?;
         let result = self.generate_mac(&mac_key, content)?;
-        let mac_os = OctetString::new(result.as_slice())?;
-        let mac_salt = OctetString::new(salt.as_slice())?;
+        let mac_os = OctetString::new(&result[..])?;
+        let mac_salt = OctetString::new(&salt[..])?;
         let params_bytes = self.digest_algorithm.parameters();
         let params_ref = Some(Any::from(AnyRef::from_der(&params_bytes)?));
 

@@ -1,3 +1,4 @@
+#![no_std]
 #![forbid(unsafe_code)]
 #![warn(
     clippy::alloc_instead_of_core,
@@ -11,6 +12,13 @@
     unused_qualifications
 )]
 #![doc = include_str!("../README.md")]
+
+extern crate alloc;
+
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 pub mod asn1_utils;
 pub mod error;

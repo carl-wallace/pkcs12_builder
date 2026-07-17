@@ -1,5 +1,7 @@
 //! Error and Result types for `pkcs12_builder`
 
+use alloc::string::String;
+
 /// Result type for `pkcs12_builder`
 pub type Result<T> = core::result::Result<T, Error>;
 

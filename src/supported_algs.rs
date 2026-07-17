@@ -1,5 +1,9 @@
 //! Supported MAC and encryption algorithms
 
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::Error;
 #[cfg(feature = "legacy")]
 use const_oid::db::rfc5912::ID_SHA_1;
