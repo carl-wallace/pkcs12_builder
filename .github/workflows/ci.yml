@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "pre-release" ]
+  pull_request:
+    branches: [ "main" ]
+  # Manual re-runs via `gh workflow run ci.yml` (available once this file is
+  # on the default branch).
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-features --all-targets
+
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --all-features
+
+  # Default features and --all-features (adds the `legacy` RC2/3DES/SHA-1 PBE
+  # arm). The openssl_interop tests build the vendored OpenSSL, which is the
+  # slow part of this job.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - ""
+          - "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test ${{ matrix.features }}
+
+  # The library is #![no_std]; prove it links for an embedded target with and
+  # without the `legacy` feature. Build-only (no test runner on the target).
+  build_nostd:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - "--no-default-features"
+          - "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - run: cargo build --locked ${{ matrix.features }} --target thumbv7em-none-eabihf
+
+  # Build against the declared rust-version with the committed lockfile —
+  # --locked keeps the resolver from pulling transitives with a newer rustc
+  # floor than the MSRV toolchain can build.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.0
+      - run: cargo build --locked --all-features
