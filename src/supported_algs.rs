@@ -19,7 +19,8 @@ use sha2::{Sha256, Sha384, Sha512};
 /// Supported MAC algorithms.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MacAlgorithm {
-    /// HMAC SHA1 (verification only, legacy/interoperability)
+    /// HMAC SHA1 (legacy/interoperability; both verification and, via `MacDataBuilder`,
+    /// generation work — prefer [MacAlgorithm::HmacSha256] when generating)
     #[cfg(feature = "legacy")]
     HmacSha1,
     /// HMAC SHA256
