@@ -888,7 +888,7 @@ fn pkcs12_pbe_encrypt(
     )?);
 
     // Allocate buffer with room for padding (up to one block = 8 bytes)
-    let mut buf = vec![0u8; plaintext.len() + 8];
+    let mut buf = Zeroizing::new(vec![0u8; plaintext.len() + 8]);
     buf[..plaintext.len()].copy_from_slice(plaintext);
 
     match alg {
