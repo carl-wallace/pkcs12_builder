@@ -2,7 +2,7 @@
 name = "pkcs12_builder"
 version = "0.1.1"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.87.0"
 
 [dependencies]
 cms = { version = "0.3.0-pre.2", default-features = false }
